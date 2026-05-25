@@ -1,0 +1,61 @@
+name: Node.js CI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "nodejs/**"
+      - ".github/workflows/ci-nodejs.yml"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - "nodejs/**"
+      - ".github/workflows/ci-nodejs.yml"
+
+jobs:
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: nodejs/package-lock.json
+
+      - name: Install dependencies
+        working-directory: nodejs
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: nodejs
+        run: npm run typecheck
+
+      - name: Test + coverage (≥95%)
+        working-directory: nodejs
+        run: npm run test:coverage
+
+  vuln-scan:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: nodejs/package-lock.json
+
+      - name: Install dependencies
+        working-directory: nodejs
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: nodejs
+        run: npm audit --audit-level=high
