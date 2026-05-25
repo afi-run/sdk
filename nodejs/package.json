@@ -15,7 +15,9 @@
   "engines": {
     "node": ">=24.0.0"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
@@ -28,6 +30,7 @@
     "viem": "^2.21.0"
   },
   "devDependencies": {
+    "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^2.1.0",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
