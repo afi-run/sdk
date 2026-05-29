@@ -3,6 +3,7 @@ import {
   AfiError,
   ApprovalError,
   InsufficientBalanceError,
+  NoSignerError,
   QuoteError,
   SimulationFailedError,
   SwapRevertedError,
@@ -69,6 +70,16 @@ describe("SwapRevertedError", () => {
     const e = new SwapRevertedError("minOut not met")
     expect(e.reason).toBe("minOut not met")
     expect(e.code).toBe("SWAP_REVERTED")
+    expect(e).toBeInstanceOf(AfiError)
+  })
+})
+
+describe("NoSignerError", () => {
+  it("sets NO_SIGNER code and is an AfiError", () => {
+    const e = new NoSignerError()
+    expect(e.code).toBe("NO_SIGNER")
+    expect(e.name).toBe("NoSignerError")
+    expect(e.message).toContain("Private key")
     expect(e).toBeInstanceOf(AfiError)
   })
 })

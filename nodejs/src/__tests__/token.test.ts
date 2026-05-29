@@ -7,6 +7,7 @@ import {
   getAllowance,
   getBalance,
   getDecimals,
+  submitApproval,
 } from "../token.js"
 import type { Account, PublicClient, Transport, WalletClient } from "viem"
 import type { base } from "viem/chains"
@@ -178,6 +179,93 @@ describe("ensureExactApproval", () => {
 
     await expect(
       ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any),
+    ).rejects.toBeInstanceOf(ApprovalError)
+  })
+})
+
+describe("submitApproval", () => {
+  it("returns null when allowance is already sufficient", async () => {
+    pub.readContract!.mockResolvedValue(1000_000000n)
+    const result = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    expect(result).toBeNull()
+    expect(wallet.writeContract).not.toHaveBeenCalled()
+  })
+
+  it("returns PendingTx with txHash without awaiting confirmation", async () => {
+    pub.readContract!.mockResolvedValue(0n)
+    wallet.writeContract!.mockResolvedValue("0xpending")
+
+    const result = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    expect(result).not.toBeNull()
+    expect(result!.txHash).toBe("0xpending")
+    // wait should not have been called yet
+    expect(pub.waitForTransactionReceipt).not.toHaveBeenCalled()
+  })
+
+  it("wait() resolves with TxReceipt when allowance is confirmed", async () => {
+    pub.readContract!
+      .mockResolvedValueOnce(0n)            // initial allowance
+      .mockResolvedValueOnce(500_000000n)   // post-wait re-check
+    wallet.writeContract!.mockResolvedValue("0xpending")
+    pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 123n, gasUsed: 21000n })
+
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const receipt = await pending!.wait()
+
+    expect(receipt.blockNumber).toBe(123n)
+    expect(receipt.gasUsed).toBe(21000n)
+  })
+
+  it("wait() throws ApprovalError when allowance is not reflected on-chain", async () => {
+    pub.readContract!
+      .mockResolvedValueOnce(0n)  // initial allowance
+      .mockResolvedValueOnce(0n)  // post-wait re-check still 0
+    wallet.writeContract!.mockResolvedValue("0xpending")
+    pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
+
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    await expect(pending!.wait()).rejects.toBeInstanceOf(ApprovalError)
+  })
+
+  it("resets allowance to 0 first for USDT-style tokens", async () => {
+    pub.readContract!
+      .mockResolvedValueOnce(200_000000n)   // current allowance > 0
+      .mockResolvedValueOnce(500_000000n)   // post-wait re-check
+    wallet.writeContract!.mockResolvedValue("0xtxhash")
+    pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
+
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    await pending!.wait()
+
+    expect(wallet.writeContract).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ functionName: "approve", args: [AFI_ADDRESS, 0n] }),
+    )
+    expect(wallet.writeContract).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ functionName: "approve", args: [AFI_ADDRESS, 500_000000n] }),
+    )
+  })
+
+  it("continues when reset-to-zero throws", async () => {
+    pub.readContract!
+      .mockResolvedValueOnce(200_000000n)
+      .mockResolvedValueOnce(500_000000n)
+    wallet.writeContract!
+      .mockRejectedValueOnce(new Error("reset not supported"))
+      .mockResolvedValueOnce("0xtxhash")
+    pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
+
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    expect(pending!.txHash).toBe("0xtxhash")
+  })
+
+  it("throws ApprovalError when writeContract fails", async () => {
+    pub.readContract!.mockResolvedValue(0n)
+    wallet.writeContract!.mockRejectedValue(new Error("user rejected"))
+
+    await expect(
+      submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any),
     ).rejects.toBeInstanceOf(ApprovalError)
   })
 })

@@ -76,6 +76,21 @@ func TestErrSwapReverted(t *testing.T) {
 	}
 }
 
+func TestErrNoSigner(t *testing.T) {
+	err := ErrNoSigner()
+
+	var afiErr *AfiError
+	if !errors.As(err, &afiErr) {
+		t.Fatal("error should be *AfiError")
+	}
+	if afiErr.Code != "NO_SIGNER" {
+		t.Errorf("Code = %q, want NO_SIGNER", afiErr.Code)
+	}
+	if afiErr.Message == "" {
+		t.Error("Message should not be empty")
+	}
+}
+
 func TestAfiErrorInterface(t *testing.T) {
 	err := ErrQuote("test")
 	// AfiError must implement the error interface
