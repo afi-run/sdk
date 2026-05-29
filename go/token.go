@@ -106,21 +106,70 @@ func ensureExactApproval(
 	return hash, nil
 }
 
-func sendApprove(ctx context.Context, c *Client, erc20ABI abi.ABI, token common.Address, amount *big.Int) (string, error) {
+func sendApproveTx(ctx context.Context, c *Client, erc20ABI abi.ABI, token common.Address, amount *big.Int) (string, error) {
 	input, err := erc20ABI.Pack("approve", AfiAddress, amount)
 	if err != nil {
 		return "", err
 	}
+	return c.sendTx(ctx, &token, input)
+}
 
-	hash, err := c.sendTx(ctx, &token, input)
+func sendApprove(ctx context.Context, c *Client, erc20ABI abi.ABI, token common.Address, amount *big.Int) (string, error) {
+	hash, err := sendApproveTx(ctx, c, erc20ABI, token, amount)
 	if err != nil {
 		return "", err
 	}
-
 	_, err = c.waitReceipt(ctx, hash)
 	if err != nil {
 		return "", err
 	}
-
 	return strings.ToLower(hash), nil
+}
+
+func submitApprove(
+	ctx context.Context,
+	client *ethclient.Client,
+	erc20ABI abi.ABI,
+	c *Client,
+	token, owner common.Address,
+	amount *big.Int,
+) (*PendingTx, error) {
+	current, err := getAllowance(ctx, client, erc20ABI, token, owner)
+	if err != nil {
+		return nil, err
+	}
+	if current.Cmp(amount) >= 0 {
+		return nil, nil
+	}
+
+	if current.Sign() > 0 {
+		if _, err := sendApprove(ctx, c, erc20ABI, token, big.NewInt(0)); err != nil {
+			_ = err // token doesn't require reset
+		}
+	}
+
+	hash, err := sendApproveTx(ctx, c, erc20ABI, token, amount)
+	if err != nil {
+		return nil, ErrApproval(err.Error())
+	}
+
+	amountCopy := new(big.Int).Set(amount)
+	pending := &PendingTx{
+		TxHash: hash,
+		waitFn: func(ctx context.Context) (*TxReceipt, error) {
+			receipt, err := c.waitReceipt(ctx, hash)
+			if err != nil {
+				return nil, err
+			}
+			confirmed, err := getAllowance(ctx, client, erc20ABI, token, owner)
+			if err != nil {
+				return nil, err
+			}
+			if confirmed.Cmp(amountCopy) < 0 {
+				return nil, ErrApproval("allowance not reflected on-chain after confirmation")
+			}
+			return &TxReceipt{BlockNumber: receipt.BlockNumber.Uint64(), GasUsed: receipt.GasUsed}, nil
+		},
+	}
+	return pending, nil
 }

@@ -1,8 +1,9 @@
-// Example 4: Full flow using Swap() convenience method
+// Example 4: One-call convenience flow using Swap()
 //
-// Swap() is a shorthand that calls GetQuote() + ExecuteSwap() in sequence.
-// Use it when you don't need to inspect the quote before executing,
-// e.g. in automated bots or scripts.
+// Swap() is equivalent to GetQuote() + ExecuteSwap() in sequence.
+// Use for bots and scripts where you don't need to review the quote.
+//
+// For user-facing apps, prefer example 3 (quote → review → execute).
 //
 // Run: go run ./examples/go/full-flow
 package main
@@ -18,25 +19,28 @@ import (
 
 func main() {
 	client, err := afi.NewClient(afi.Config{
-		RPCURL:     "https://rpc.ankr.com/base/YOUR_API_KEY",
-		PrivateKey: "YOUR_PRIVATE_KEY",
+		RPCURL: "https://rpc.ankr.com/base/YOUR_API_KEY",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
-	amountIn, err := afi.ParseUnits("500", 6) // 500 USDC
-	if err != nil {
-		log.Fatal(err)
+	if err := client.Connect("YOUR_PRIVATE_KEY"); err != nil {
+		log.Fatal("connect:", err)
 	}
 
-	result, err := client.Swap(context.Background(), afi.SwapParams{
-		TokenIn:  common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
-		TokenOut: afi.WETH,
-		AmountIn: amountIn,
-		Slippage: 1.0, // 1%
-	})
+	ctx := context.Background()
+
+	// Variation A: minimal
+	result, err := client.Swap(ctx,
+		afi.From(
+			common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+			afi.WETH,
+			"500",
+		),
+		afi.WithSlippage(1.0),
+	)
 	if err != nil {
 		log.Fatal("swap:", err)
 	}
@@ -45,4 +49,13 @@ func main() {
 	fmt.Printf("  Tx:         %s\n", result.TxHash.Hex())
 	fmt.Printf("  Amount in:  %s USDC\n", afi.FormatUnits(result.AmountIn, 6))
 	fmt.Printf("  Amount out: %s WETH\n", afi.FormatUnits(result.AmountOut, 18))
+
+	// Variation B: with optional parameters
+	// result2, err := client.Swap(ctx,
+	// 	afi.From(usdc, afi.WETH, "200"),
+	// 	afi.WithSlippage(0.5),
+	// 	afi.WithMaxHops(3),
+	// 	afi.OnNetwork(afi.NetworkBase),
+	// 	afi.WithDexs(afi.DexUniV3, afi.DexAerodrome),
+	// )
 }

@@ -31,7 +31,7 @@ func TestFetchTokens(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		tokens, err := fetchTokensFrom(context.Background(), srv.URL)
+		tokens, err := fetchTokensFrom(context.Background(), NetworkBase, srv.URL)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -57,13 +57,29 @@ func TestFetchTokens(t *testing.T) {
 		}
 	})
 
+	t.Run("appends network query param to URL", func(t *testing.T) {
+		var capturedURL string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedURL = r.URL.String()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(mockInfoResponse)
+		}))
+		defer srv.Close()
+
+		fetchTokensFrom(context.Background(), NetworkBase, srv.URL)
+
+		if capturedURL != "/?network=base" {
+			t.Errorf("URL = %q, want \"/?network=base\"", capturedURL)
+		}
+	})
+
 	t.Run("returns error on HTTP 500", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}))
 		defer srv.Close()
 
-		_, err := fetchTokensFrom(context.Background(), srv.URL)
+		_, err := fetchTokensFrom(context.Background(), NetworkBase, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for HTTP 500, got nil")
 		}
@@ -76,7 +92,7 @@ func TestFetchTokens(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := fetchTokensFrom(context.Background(), srv.URL)
+		_, err := fetchTokensFrom(context.Background(), NetworkBase, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for non-success status, got nil")
 		}
@@ -92,7 +108,7 @@ func TestFetchTokens(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := fetchTokensFrom(context.Background(), srv.URL)
+		_, err := fetchTokensFrom(context.Background(), NetworkBase, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for missing base key, got nil")
 		}
@@ -107,14 +123,14 @@ func TestFetchTokens(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // cancel immediately
 
-		_, err := fetchTokensFrom(ctx, srv.URL)
+		_, err := fetchTokensFrom(ctx, NetworkBase, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for cancelled context, got nil")
 		}
 	})
 
 	t.Run("returns error for invalid URL", func(t *testing.T) {
-		_, err := fetchTokensFrom(context.Background(), "://invalid-url")
+		_, err := fetchTokensFrom(context.Background(), NetworkBase, "://invalid-url")
 		if err == nil {
 			t.Fatal("expected error for invalid URL, got nil")
 		}
@@ -127,7 +143,7 @@ func TestFetchTokens(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := fetchTokensFrom(context.Background(), srv.URL)
+		_, err := fetchTokensFrom(context.Background(), NetworkBase, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for invalid JSON, got nil")
 		}

@@ -1,72 +1,53 @@
 /**
  * Example 3: Quote → review → execute (recommended flow)
  *
- * This is the recommended pattern for production applications:
- * 1. Fetch a quote (no tx sent)
+ * 1. Fetch a quote with .get() — no tx sent
  * 2. Show pricing to the user
- * 3. User confirms
- * 4. Call executeSwap(quote) — this handles approve + simulate + swap
+ * 3. User confirms → call executeSwap(quote)
  *
- * executeSwap() will:
- *   - Check your token balance
- *   - Approve exactly the input amount to the AFI contract (skipped if already approved)
- *   - Simulate the swap via eth_call — throws before sending if it would revert
- *   - Send the swap transaction
- *   - Return confirmed amounts from the on-chain SwapExecuted event
+ * executeSwap() handles: balance check → approve → simulate → swap
  */
-import { AfiClient, SimulationFailedError, InsufficientBalanceError } from "@afi-run/sdk"
+import { AfiClient, SimulationFailedError, InsufficientBalanceError, formatUnits } from "@afi-run/sdk"
 
 const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 const WETH = "0x4200000000000000000000000000000000000006"
 
 const client = new AfiClient({
   rpcUrl: "https://rpc.ankr.com/base/YOUR_API_KEY",
-  privateKey: "0xYOUR_PRIVATE_KEY",
 })
 
 async function main() {
-  // Step 1: Get quote (read-only, no tx)
+  // Step 1: Fetch quote — no private key needed
   console.log("Step 1: Fetching quote...")
-  const quote = await client.getQuote({
-    tokenIn: USDC,
-    tokenOut: WETH,
-    amountIn: 1000_000000n, // 1000 USDC
-    slippage: 0.5,
-  })
+  const quote = await client
+    .quote(USDC, WETH, "1000")
+    .slippage(0.5)
+    .get()
 
-  const amountOutEth = Number(quote.amountOutWei) / 1e18
-  const minOutEth = Number(quote.minOutWei) / 1e18
-
-  // Step 2: Show pricing
+  // Step 2: Show pricing to user
   console.log("\nStep 2: Quote received:")
-  console.log(`  Expected:  ~${amountOutEth.toFixed(6)} WETH`)
-  console.log(`  Minimum:   ${minOutEth.toFixed(6)} WETH (${quote.slippage}% slippage)`)
+  console.log(`  Expected:  ~${quote.amountOut} WETH  ($${quote.tokenOutPrice})`)
+  console.log(`  Minimum:   ${quote.minOut} WETH (${quote.slippage}% slippage)`)
   console.log(`  Fee:       ${quote.feeBps} bps`)
 
-  // Step 3: User confirms — in a real app this would be a UI prompt
+  // Step 3: Connect signer and execute
   const userConfirmed = true
-  if (!userConfirmed) {
-    console.log("\nSwap cancelled by user.")
-    return
-  }
+  if (!userConfirmed) { console.log("\nCancelled."); return }
 
-  // Step 4: Execute with the existing quote (no second fetch needed)
+  client.connect("0xYOUR_PRIVATE_KEY")
   console.log("\nStep 3: Executing swap...")
+
   try {
     const result = await client.executeSwap(quote)
-
-    const actualOutEth = Number(result.amountOut) / 1e18
-
     console.log("\nSwap confirmed!")
     console.log(`  Tx hash:    ${result.txHash}`)
     console.log(`  Block:      ${result.blockNumber}`)
-    console.log(`  Actual out: ${actualOutEth.toFixed(6)} WETH  (from on-chain event)`)
+    console.log(`  Actual out: ${formatUnits(result.amountOut, 18)} WETH`)
     console.log(`  Gas used:   ${result.gasUsed}`)
   } catch (e) {
     if (e instanceof InsufficientBalanceError) {
-      console.error(`Not enough USDC. Have: ${e.balance}, need: ${e.required}`)
+      console.error(`Not enough USDC: have ${formatUnits(e.balance, 6)}, need ${formatUnits(e.required, 6)}`)
     } else if (e instanceof SimulationFailedError) {
-      // Swap would revert — no tx was sent, no gas wasted
       console.error(`Swap would revert: ${e.reason}`)
     } else {
       throw e

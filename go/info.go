@@ -10,8 +10,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-const infoURL = "https://rpc.afi.run/info"
-
 type infoResponse struct {
 	Status string                `json:"status"`
 	Data   map[string][]rawToken `json:"data"`
@@ -24,14 +22,16 @@ type rawToken struct {
 	Active   bool   `json:"active"`
 }
 
-// fetchTokens fetches available tokens from the AFI info endpoint.
-func fetchTokens(ctx context.Context) ([]Token, error) {
-	return fetchTokensFrom(ctx, infoURL)
+// fetchTokens fetches available tokens from the AFI info endpoint for the given network.
+func fetchTokens(ctx context.Context, network Network, infoURL string) ([]Token, error) {
+	return fetchTokensFrom(ctx, network, infoURL)
 }
 
 // fetchTokensFrom allows injecting a custom URL — used by tests.
-func fetchTokensFrom(ctx context.Context, url string) ([]Token, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func fetchTokensFrom(ctx context.Context, network Network, url string) ([]Token, error) {
+	u := url + "?network=" + string(network)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build info request: %w", err)
 	}
@@ -53,16 +53,16 @@ func fetchTokensFrom(ctx context.Context, url string) ([]Token, error) {
 	}
 
 	if result.Status != "success" {
-		return nil, fmt.Errorf("no base tokens in info response")
+		return nil, fmt.Errorf("no %s tokens in info response", network)
 	}
 
-	baseTokens, ok := result.Data["base"]
-	if !ok || len(baseTokens) == 0 {
-		return nil, fmt.Errorf("no base tokens in info response")
+	networkTokens, ok := result.Data[string(network)]
+	if !ok || len(networkTokens) == 0 {
+		return nil, fmt.Errorf("no %s tokens in info response", network)
 	}
 
-	tokens := make([]Token, len(baseTokens))
-	for i, t := range baseTokens {
+	tokens := make([]Token, len(networkTokens))
+	for i, t := range networkTokens {
 		tokens[i] = Token{
 			Address:  common.HexToAddress(t.Address),
 			Symbol:   t.Symbol,

@@ -3,12 +3,12 @@ import type { Account, PublicClient, Transport, WalletClient } from "viem"
 import type { base } from "viem/chains"
 import { AFI_ABI, AFI_ADDRESS } from "./constants.js"
 import { SimulationFailedError, SwapRevertedError } from "./errors.js"
-import type { Address, Hex, Quote, SwapResult } from "./types.js"
+import type { Address, Hex, PendingSwap, Quote, SwapResult } from "./types.js"
 
 type BasePublicClient = PublicClient<Transport, typeof base>
 type BaseWalletClient = WalletClient<Transport, typeof base, Account>
 
-export async function simulate(
+export async function simulateSwap(
   quote: Quote,
   sender: Address,
   client: BasePublicClient,
@@ -30,12 +30,12 @@ export async function simulate(
   }
 }
 
-export async function executeSwap(
+export async function submitSwap(
   quote: Quote,
   sender: Address,
   publicClient: BasePublicClient,
   walletClient: BaseWalletClient,
-): Promise<SwapResult> {
+): Promise<PendingSwap> {
   const gas = await publicClient.estimateContractGas({
     address: AFI_ADDRESS,
     abi: AFI_ABI,
@@ -57,24 +57,26 @@ export async function executeSwap(
     throw new SwapRevertedError((e as Error).message)
   }
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash })
-
-  const logs = parseEventLogs({
-    abi: AFI_ABI,
-    eventName: "SwapExecuted",
-    logs: receipt.logs,
-  })
-
-  const event = logs[0]
-  if (!event) throw new SwapRevertedError("SwapExecuted event not found in receipt")
-
   return {
     txHash: hash,
-    blockNumber: receipt.blockNumber,
-    amountIn: event.args.amountIn,
-    amountOut: event.args.amountOut,
-    tokenIn: event.args.assetIn,
-    tokenOut: event.args.assetOut,
-    gasUsed: receipt.gasUsed,
+    wait: async (): Promise<SwapResult> => {
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      const logs = parseEventLogs({
+        abi: AFI_ABI,
+        eventName: "SwapExecuted",
+        logs: receipt.logs,
+      })
+      const event = logs[0]
+      if (!event) throw new SwapRevertedError("SwapExecuted event not found in receipt")
+      return {
+        txHash: hash,
+        blockNumber: receipt.blockNumber,
+        amountIn: event.args.amountIn,
+        amountOut: event.args.amountOut,
+        tokenIn: event.args.assetIn,
+        tokenOut: event.args.assetOut,
+        gasUsed: receipt.gasUsed,
+      }
+    },
   }
 }

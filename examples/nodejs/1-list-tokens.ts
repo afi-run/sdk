@@ -1,32 +1,35 @@
 /**
- * Example 1: List available tokens on Base
+ * Example 1: List available tokens
  *
- * Use getTokens() to discover which tokens are supported before
- * building any swap. No private key or RPC required for this call.
+ * getTokens() accepts an optional network (default: NETWORK.BASE).
+ * No private key needed — read-only operation.
  */
-import { AfiClient } from "@afi-run/sdk"
+import { AfiClient, NETWORK } from "@afi-run/sdk"
 
 const client = new AfiClient({
   rpcUrl: "https://rpc.ankr.com/base/YOUR_API_KEY",
-  privateKey: "0xYOUR_PRIVATE_KEY",
 })
 
 async function main() {
-  const tokens = await client.getTokens()
-
-  console.log(`${tokens.length} tokens available on Base:\n`)
-
-  for (const token of tokens) {
+  // List tokens on Base (default)
+  const baseTokens = await client.getTokens()
+  console.log(`${baseTokens.length} tokens on Base:\n`)
+  for (const token of baseTokens) {
     console.log(`  ${token.symbol.padEnd(10)} ${token.address}  (${token.decimals} decimals)`)
   }
 
-  // Find a specific token by symbol
-  const usdc = tokens.find((t) => t.symbol === "USDC")
-  const weth = tokens.find((t) => t.symbol === "WETH")
-
-  if (!usdc || !weth) {
-    throw new Error("USDC or WETH not found in token list")
+  // List tokens on BSC
+  const bscTokens = await client.getTokens(NETWORK.BSC)
+  console.log(`\n${bscTokens.length} tokens on BSC:\n`)
+  for (const token of bscTokens) {
+    console.log(`  ${token.symbol.padEnd(10)} ${token.address}  (${token.decimals} decimals)`)
   }
+
+  // Find specific tokens by symbol
+  const usdc = baseTokens.find((t) => t.symbol === "USDC")
+  const weth = baseTokens.find((t) => t.symbol === "WETH")
+
+  if (!usdc || !weth) throw new Error("USDC or WETH not found")
 
   console.log("\nReady to swap:")
   console.log(`  USDC → ${usdc.address}`)

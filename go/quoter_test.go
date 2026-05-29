@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -47,30 +48,37 @@ func TestFetchQuote(t *testing.T) {
 		return map[string]any{
 			"status": "success",
 			"data": map[string]any{
-				"tokenIn":      usdc.Hex(),
-				"tokenOut":     weth.Hex(),
-				"amountInRaw":  "1000000000",
-				"amountOutRaw": "500000000000000000",
-				"minOutRaw":    "497500000000000000",
-				"steps":        "0xabcdef",
-				"slippage":     0.5,
-				"path":         []string{usdc.Hex(), weth.Hex()},
+				"tokenIn":       usdc.Hex(),
+				"tokenOut":      weth.Hex(),
+				"amountIn":      "1000",
+				"amountOut":     "0.5",
+				"minOut":        "0.4975",
+				"amountInRaw":   "1000000000",
+				"amountOutRaw":  "500000000000000000",
+				"minOutRaw":     "497500000000000000",
+				"steps":         "0xabcdef",
+				"slippage":      0.5,
+				"path":          []string{usdc.Hex(), weth.Hex()},
+				"tokenInPrice":  "0.00047147437880193935",
+				"tokenOutPrice": "2121.006029089203",
 			},
 		}
 	}
 
-	baseParams := SwapParams{
-		TokenIn:  usdc,
-		TokenOut: weth,
-		AmountIn: big.NewInt(1000_000000),
-		Slippage: 0.5,
+	baseOpts := &quoteOptions{
+		tokenIn:  usdc.Hex(),
+		tokenOut: weth.Hex(),
+		amountIn: "1000",
+		slippage: 0.5,
+		maxHops:  2,
+		network:  NetworkBase,
 	}
 
 	t.Run("returns valid quote on success", func(t *testing.T) {
 		srv := newJSONServer(t, 200, makeSuccessPayload())
 		defer srv.Close()
 
-		q, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		q, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -91,9 +99,132 @@ func TestFetchQuote(t *testing.T) {
 		if len(q.Path) != 2 {
 			t.Errorf("Path length = %d, want 2", len(q.Path))
 		}
+		if q.TokenInPrice != "0.00047147437880193935" {
+			t.Errorf("TokenInPrice = %q", q.TokenInPrice)
+		}
+		if q.TokenOutPrice != "2121.006029089203" {
+			t.Errorf("TokenOutPrice = %q", q.TokenOutPrice)
+		}
 	})
 
-	t.Run("sends formatted amountIn not raw wei", func(t *testing.T) {
+	t.Run("sends correct request body", func(t *testing.T) {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&captured)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(makeSuccessPayload())
+		}))
+		defer srv.Close()
+
+		opts := &quoteOptions{
+			tokenIn:  usdc.Hex(),
+			tokenOut: weth.Hex(),
+			amountIn: "1000",
+			slippage: 0.5,
+			maxHops:  2,
+			network:  NetworkBase,
+			rpcUrls:  []RpcUrlInfo{{URL: "https://rpc.example.com"}},
+		}
+		fetchQuoteFrom(context.Background(), opts, 35, srv.URL)
+
+		if captured["network"] != "base" {
+			t.Errorf("network = %v, want base", captured["network"])
+		}
+		if captured["amountIn"] != "1000" {
+			t.Errorf("amountIn = %v, want 1000", captured["amountIn"])
+		}
+		if captured["show"] != true {
+			t.Errorf("show = %v, want true", captured["show"])
+		}
+		rpcUrls, ok := captured["rpcUrls"].([]any)
+		if !ok || len(rpcUrls) == 0 {
+			t.Error("rpcUrls should be a non-empty array")
+		}
+	})
+
+	t.Run("includes priceBase when set", func(t *testing.T) {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&captured)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(makeSuccessPayload())
+		}))
+		defer srv.Close()
+
+		opts := &quoteOptions{
+			tokenIn: usdc.Hex(), tokenOut: weth.Hex(), amountIn: "1000",
+			slippage: 0.5, maxHops: 2, network: NetworkBase,
+			priceBase: "USDC",
+		}
+		fetchQuoteFrom(context.Background(), opts, 35, srv.URL)
+
+		if captured["priceBase"] != "USDC" {
+			t.Errorf("priceBase = %v, want USDC", captured["priceBase"])
+		}
+	})
+
+	t.Run("includes dexs when set", func(t *testing.T) {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&captured)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(makeSuccessPayload())
+		}))
+		defer srv.Close()
+
+		opts := &quoteOptions{
+			tokenIn: usdc.Hex(), tokenOut: weth.Hex(), amountIn: "1000",
+			slippage: 0.5, maxHops: 2, network: NetworkBase,
+			dexs: []Dex{DexUniV3, DexAerodrome},
+		}
+		fetchQuoteFrom(context.Background(), opts, 35, srv.URL)
+
+		dexs, ok := captured["dexs"].([]any)
+		if !ok || len(dexs) != 2 {
+			t.Errorf("dexs = %v, want 2 entries", captured["dexs"])
+		}
+	})
+
+	t.Run("maps tokenInBasePrice and tokenOutBasePrice from response", func(t *testing.T) {
+		payload := makeSuccessPayload()
+		payload["data"].(map[string]any)["tokenInBasePrice"] = "1.00"
+		payload["data"].(map[string]any)["tokenOutBasePrice"] = "2121.00"
+		srv := newJSONServer(t, 200, payload)
+		defer srv.Close()
+
+		q, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if q.TokenInBasePrice != "1.00" {
+			t.Errorf("TokenInBasePrice = %q, want 1.00", q.TokenInBasePrice)
+		}
+		if q.TokenOutBasePrice != "2121.00" {
+			t.Errorf("TokenOutBasePrice = %q, want 2121.00", q.TokenOutBasePrice)
+		}
+	})
+
+	t.Run("uses BSC network when set", func(t *testing.T) {
+		var captured map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&captured)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(makeSuccessPayload())
+		}))
+		defer srv.Close()
+
+		opts := &quoteOptions{
+			tokenIn: usdc.Hex(), tokenOut: weth.Hex(), amountIn: "1000",
+			slippage: 0.5, maxHops: 2, network: NetworkBSC,
+		}
+		fetchQuoteFrom(context.Background(), opts, 35, srv.URL)
+
+		if captured["network"] != "bsc" {
+			t.Errorf("network = %v, want bsc", captured["network"])
+		}
+	})
+
+	t.Run("sends amountIn string directly to quoter", func(t *testing.T) {
 		var capturedBody map[string]any
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			json.NewDecoder(r.Body).Decode(&capturedBody)
@@ -102,14 +233,14 @@ func TestFetchQuote(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		params := SwapParams{TokenIn: usdc, TokenOut: weth, AmountIn: big.NewInt(1_500000), Slippage: 0.5}
-		fetchQuoteFrom(context.Background(), params, 6, 35, "https://rpc.example.com", srv.URL)
+		opts := &quoteOptions{
+			tokenIn: usdc.Hex(), tokenOut: weth.Hex(), amountIn: "1.5",
+			slippage: 0.5, maxHops: 2, network: NetworkBase,
+		}
+		fetchQuoteFrom(context.Background(), opts, 35, srv.URL)
 
 		if capturedBody["amountIn"] != "1.5" {
 			t.Errorf("amountIn = %v, want \"1.5\"", capturedBody["amountIn"])
-		}
-		if capturedBody["network"] != "base" {
-			t.Errorf("network = %v, want \"base\"", capturedBody["network"])
 		}
 	})
 
@@ -117,7 +248,7 @@ func TestFetchQuote(t *testing.T) {
 		srv := newJSONServer(t, 200, map[string]any{"status": "error", "message": "no route"})
 		defer srv.Close()
 
-		_, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -129,7 +260,7 @@ func TestFetchQuote(t *testing.T) {
 		srv := newJSONServer(t, 200, payload)
 		defer srv.Close()
 
-		_, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for zero minOut, got nil")
 		}
@@ -139,7 +270,7 @@ func TestFetchQuote(t *testing.T) {
 		srv := newJSONServer(t, 500, nil)
 		defer srv.Close()
 
-		_, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for HTTP 500, got nil")
 		}
@@ -149,12 +280,25 @@ func TestFetchQuote(t *testing.T) {
 		srv := newJSONServer(t, 200, map[string]any{"status": "error"})
 		defer srv.Close()
 
-		_, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if err.Error() == "" {
 			t.Error("error message should not be empty")
+		}
+	})
+
+	t.Run("extracts message from string data on error", func(t *testing.T) {
+		srv := newJSONServer(t, 200, map[string]any{"status": "error", "data": "insufficient liquidity"})
+		defer srv.Close()
+
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "insufficient liquidity") {
+			t.Errorf("expected error to contain %q, got %q", "insufficient liquidity", err.Error())
 		}
 	})
 
@@ -165,14 +309,14 @@ func TestFetchQuote(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_, err := fetchQuoteFrom(ctx, baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		_, err := fetchQuoteFrom(ctx, baseOpts, 35, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for cancelled context, got nil")
 		}
 	})
 
 	t.Run("returns error for invalid quoter URL", func(t *testing.T) {
-		_, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", "://invalid-url")
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, "://invalid-url")
 		if err == nil {
 			t.Fatal("expected error for invalid URL, got nil")
 		}
@@ -185,7 +329,7 @@ func TestFetchQuote(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := fetchQuoteFrom(context.Background(), baseParams, 6, 35, "https://rpc.example.com", srv.URL)
+		_, err := fetchQuoteFrom(context.Background(), baseOpts, 35, srv.URL)
 		if err == nil {
 			t.Fatal("expected error for invalid JSON, got nil")
 		}

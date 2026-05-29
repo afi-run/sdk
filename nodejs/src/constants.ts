@@ -2,7 +2,7 @@ import type { Address } from "./types.js"
 
 export const AFI_ADDRESS: Address = "0xB8cC65321d169D55b93b4402D795701c6B308ce4"
 export const BASE_CHAIN_ID = 8453
-export const QUOTER_URL = "https://rpc.afi.run/quoter"
+export const API_BASE_URL = "https://rpc.afi.run"
 export const WETH: Address = "0x4200000000000000000000000000000000000006"
 
 export const AFI_ABI = [

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fetchTokens } from "../info.js"
+import { fetchTokens, fetchTokensFrom } from "../info.js"
+import { NETWORK } from "../types.js"
+
+const INFO_URL = "https://rpc.afi.run/info"
 
 const mockBaseTokens = [
   { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6, active: true },
@@ -27,7 +30,7 @@ describe("fetchTokens", () => {
       new Response(JSON.stringify(successResponse), { status: 200 }),
     )
 
-    const tokens = await fetchTokens()
+    const tokens = await fetchTokens(NETWORK.BASE, INFO_URL)
 
     expect(tokens).toHaveLength(3)
     expect(tokens[0].symbol).toBe("USDC")
@@ -42,20 +45,32 @@ describe("fetchTokens", () => {
       new Response(JSON.stringify(successResponse), { status: 200 }),
     )
 
-    const tokens = await fetchTokens()
+    const tokens = await fetchTokens(NETWORK.BASE, INFO_URL)
     expect(tokens[0].address).toBe("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913")
+  })
+
+  it("appends network as query param", async () => {
+    const bscResponse = { status: "success", data: { bsc: mockBaseTokens } }
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify(bscResponse), { status: 200 }),
+    )
+
+    await fetchTokens(NETWORK.BSC, INFO_URL)
+
+    const [url] = vi.mocked(fetch).mock.calls[0] as [string]
+    expect(url).toContain("?network=bsc")
   })
 
   it("throws on HTTP error", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("", { status: 500 }))
 
-    await expect(fetchTokens()).rejects.toThrow("HTTP 500")
+    await expect(fetchTokens(NETWORK.BASE, INFO_URL)).rejects.toThrow("HTTP 500")
   })
 
   it("throws on network failure", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("connection refused"))
 
-    await expect(fetchTokens()).rejects.toThrow("connection refused")
+    await expect(fetchTokens(NETWORK.BASE, INFO_URL)).rejects.toThrow("connection refused")
   })
 
   it("throws when status is not success", async () => {
@@ -63,14 +78,28 @@ describe("fetchTokens", () => {
       new Response(JSON.stringify({ status: "error" }), { status: 200 }),
     )
 
-    await expect(fetchTokens()).rejects.toThrow("no data for base network")
+    await expect(fetchTokens(NETWORK.BASE, INFO_URL)).rejects.toThrow("no data")
   })
 
-  it("throws when base key is missing", async () => {
+  it("throws when network key is missing from response", async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(JSON.stringify({ status: "success", data: { arbitrum: [] } }), { status: 200 }),
     )
 
-    await expect(fetchTokens()).rejects.toThrow("no data for base network")
+    await expect(fetchTokens(NETWORK.BASE, INFO_URL)).rejects.toThrow("no tokens for network")
+  })
+})
+
+describe("fetchTokensFrom", () => {
+  it("is an alias for fetchTokens with injectable URL", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify(successResponse), { status: 200 }),
+    )
+
+    const tokens = await fetchTokensFrom(NETWORK.BASE, "https://custom.rpc/info")
+
+    expect(tokens).toHaveLength(3)
+    const [url] = vi.mocked(fetch).mock.calls[0] as [string]
+    expect(url).toContain("custom.rpc")
   })
 })

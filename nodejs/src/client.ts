@@ -9,99 +9,167 @@ import {
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { base } from "viem/chains"
-import { AFI_ABI, AFI_ADDRESS } from "./constants.js"
+import { AFI_ABI, AFI_ADDRESS, API_BASE_URL } from "./constants.js"
+import { NoSignerError, SimulationFailedError } from "./errors.js"
 import { fetchTokens } from "./info.js"
-import { fetchQuote } from "./quoter.js"
-import { assertSufficientBalance, ensureExactApproval, getDecimals } from "./token.js"
-import { simulate, executeSwap } from "./swap.js"
-import type { AfiConfig, Quote, SwapParams, SwapResult, Token } from "./types.js"
+import { QuoteBuilder } from "./builder.js"
+import { assertSufficientBalance, ensureExactApproval, submitApproval } from "./token.js"
+import { simulateSwap, submitSwap as sendSwap } from "./swap.js"
+import type { AfiConfig, Address, Hex, Network, PendingSwap, PendingTx, Quote, SwapResult, Token } from "./types.js"
+import { NETWORK } from "./types.js"
 
 type BasePublicClient = PublicClient<Transport, typeof base>
 type BaseWalletClient = WalletClient<Transport, typeof base, Account>
 
 export class AfiClient {
+  private readonly _rpcUrl: string
   private readonly pub: BasePublicClient
-  private readonly wallet: BaseWalletClient
-  private readonly account: ReturnType<typeof privateKeyToAccount>
-  private readonly rpcUrl: string
+  private _apiUrl: string
+  private wallet: BaseWalletClient | undefined
+  private account: ReturnType<typeof privateKeyToAccount> | undefined
 
   constructor(config: AfiConfig) {
-    this.rpcUrl = config.rpcUrl
-    this.account = privateKeyToAccount(config.privateKey)
+    this._rpcUrl  = config.rpcUrl
+    this._apiUrl  = API_BASE_URL
     this.pub = createPublicClient({ chain: base, transport: http(config.rpcUrl) })
-    this.wallet = createWalletClient({
-      account: this.account,
-      chain: base,
-      transport: http(config.rpcUrl),
-    }) as BaseWalletClient
+    if (config.privateKey) {
+      this.connect(config.privateKey)
+    }
+  }
+
+  /** The blockchain RPC URL configured on this client. */
+  get rpcUrl(): string { return this._rpcUrl }
+
+  /** The full quoter endpoint URL (API base + "/quoter"). */
+  get quoterUrl(): string { return this._apiUrl + "/quoter" }
+
+  /** The full info endpoint URL (API base + "/info"). */
+  get infoUrl(): string { return this._apiUrl + "/info" }
+
+  /**
+   * Changes the base URL used for API calls (default: https://rpc.afi.run).
+   * Useful for pointing the SDK at a local or staging instance.
+   * Returns `this` for chaining.
+   */
+  setApiUrl(url: string): this {
+    this._apiUrl = url
+    return this
   }
 
   /**
-   * Returns all tokens available for swapping on Base.
-   * Use this to discover supported tokens before building a swap.
+   * Attaches a signer to this client. Returns `this` for chaining.
    */
-  async getTokens(): Promise<Token[]> {
-    return fetchTokens()
+  connect(privateKey: Hex): this {
+    this.account = privateKeyToAccount(privateKey)
+    this.wallet  = createWalletClient({
+      account:   this.account,
+      chain:     base,
+      transport: http(this._rpcUrl),
+    }) as BaseWalletClient
+    return this
+  }
+
+  private requireSigner(): { account: ReturnType<typeof privateKeyToAccount>; wallet: BaseWalletClient } {
+    if (!this.account || !this.wallet) throw new NoSignerError()
+    return { account: this.account, wallet: this.wallet }
+  }
+
+  /**
+   * Returns tokens available for swapping on the specified network (default: Base).
+   */
+  async getTokens(network: Network = NETWORK.BASE): Promise<Token[]> {
+    return fetchTokens(network, this.infoUrl)
   }
 
   /** Reads the current protocol fee from the contract (basis points). */
   async getFeeBps(): Promise<number> {
     return this.pub.readContract({
-      address: AFI_ADDRESS,
-      abi: AFI_ABI,
+      address:      AFI_ADDRESS,
+      abi:          AFI_ABI,
       functionName: "feeBps",
     })
   }
 
   /**
-   * Fetches a quote for the given swap params.
-   * Returns pricing, route path, minimum output, and the encoded steps
-   * needed for execution. No on-chain interaction — safe to call freely.
+   * Returns a QuoteBuilder for the given token pair and input amount.
+   * Chain methods to configure the quote, then call .get() or .execute().
+   *
+   * @example
+   * const quote = await client
+   *   .quote(USDC, WETH, "1000")
+   *   .slippage(0.5)
+   *   .network(NETWORK.BASE)
+   *   .get()
+   *
+   * @example
+   * // Pass Token objects directly from getTokens()
+   * const tokens = await client.getTokens()
+   * const usdc = tokens.find(t => t.symbol === "USDC")!
+   * const result = await client
+   *   .quote(usdc, WETH, "1000")
+   *   .slippage(0.5)
+   *   .execute()
    */
-  async getQuote(params: SwapParams): Promise<Quote> {
-    const [decimals, feeBps] = await Promise.all([
-      getDecimals(params.tokenIn, this.pub),
-      this.getFeeBps(),
-    ])
-    return fetchQuote(params, decimals, feeBps, this.rpcUrl)
+  quote(tokenIn: Address | Token, tokenOut: Address | Token, amountIn: string): QuoteBuilder {
+    return new QuoteBuilder(this, tokenIn, tokenOut, amountIn)
   }
 
   /**
-   * Approves exactly `amountWei` of `tokenIn` to the AFI contract.
-   * Returns the tx hash, or null if existing allowance was already sufficient.
-   * Called automatically by executeSwap() — only use this directly for custom flows.
+   * Sends an approve tx for exactly `amountWei` of `tokenIn` to the AFI contract.
+   * Returns a PendingTx or null if allowance was already sufficient.
    */
-  async approve(tokenIn: string, amountWei: bigint): Promise<string | null> {
-    return ensureExactApproval(
+  async approve(tokenIn: string, amountWei: bigint): Promise<PendingTx | null> {
+    const { account, wallet } = this.requireSigner()
+    return submitApproval(
       tokenIn as `0x${string}`,
-      this.account.address,
+      account.address,
       amountWei,
       this.pub,
-      this.wallet,
+      wallet,
     )
+  }
+
+  /**
+   * Simulates the swap. Returns true if it would succeed, false otherwise.
+   * The optional `log` callback receives the failure reason when simulation fails.
+   */
+  async simulate(quote: Quote, log?: (reason: string) => void): Promise<boolean> {
+    const { account } = this.requireSigner()
+    try {
+      await simulateSwap(quote, account.address, this.pub)
+      return true
+    } catch (e) {
+      if (e instanceof SimulationFailedError) {
+        log?.(e.reason)
+        return false
+      }
+      throw e
+    }
+  }
+
+  /**
+   * Sends the swap tx and returns a PendingSwap without waiting for confirmation.
+   */
+  async submitSwap(quote: Quote): Promise<PendingSwap> {
+    const { account, wallet } = this.requireSigner()
+    return sendSwap(quote, account.address, this.pub, wallet)
   }
 
   /**
    * Executes a swap from a pre-fetched quote.
    *
-   * Flow: balance check → approve (exact) → simulate → swap
-   *
-   * Use this after reviewing a quote from getQuote().
-   * Throws SimulationFailedError before sending any tx if the swap would revert.
+   * Flow: balance check → approve (exact, waits) → simulate → submitSwap → wait
    */
   async executeSwap(quote: Quote): Promise<SwapResult> {
-    await assertSufficientBalance(quote.tokenIn, this.account.address, quote.amountInWei, this.pub)
-    await this.approve(quote.tokenIn, quote.amountInWei)
-    await simulate(quote, this.account.address, this.pub)
-    return executeSwap(quote, this.account.address, this.pub, this.wallet)
-  }
+    const { account, wallet } = this.requireSigner()
+    await assertSufficientBalance(quote.tokenIn, account.address, quote.amountInWei, this.pub)
+    await ensureExactApproval(quote.tokenIn, account.address, quote.amountInWei, this.pub, wallet)
 
-  /**
-   * Convenience method: runs the full flow in one call.
-   * Equivalent to: const quote = await getQuote(params); return executeSwap(quote)
-   */
-  async swap(params: SwapParams): Promise<SwapResult> {
-    const quote = await this.getQuote(params)
-    return this.executeSwap(quote)
+    let simulationReason: string | undefined
+    const ok = await this.simulate(quote, (r) => { simulationReason = r })
+    if (!ok) throw new SimulationFailedError(simulationReason ?? "simulation failed")
+
+    const pending = await sendSwap(quote, account.address, this.pub, wallet)
+    return pending.wait()
   }
 }

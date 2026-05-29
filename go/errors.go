@@ -36,3 +36,7 @@ func ErrApproval(reason string) error {
 func ErrSwapReverted(reason string) error {
 	return newErr("SWAP_REVERTED", "swap reverted: %s", reason)
 }
+
+func ErrNoSigner() error {
+	return newErr("NO_SIGNER", "private key required — create the client with PrivateKey set or call Connect()")
+}

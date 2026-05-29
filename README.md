@@ -1,287 +1,347 @@
 # AFI SDK
 
-SDK for token swaps on Base via the [AFI Protocol](https://afi.run).
+SDK for token swaps via the [AFI Protocol](https://afi.run).
 
-Available in **Node.js (TypeScript)** and **Go**.
+Available in **Node.js (TypeScript)** and **Go**. Supports Base, BSC, Arbitrum, Ethereum, and Unichain.
 
 ---
 
 ## Install
 
 ```bash
-# Go — install directly from GitHub
+# Go
 go get github.com/afi-run/sdk/go
 
-# Node.js — clone and install from local path
+# Node.js
 git clone https://github.com/afi-run/sdk.git
 npm install ./sdk/nodejs
 ```
 
-> **Node.js note:** npm does not support subdirectory GitHub installs.
-> Once the package is published on npm, installation will be simply `npm install @afi-run/sdk`.
+> Once the package is published on npm: `npm install @afi-run/sdk`
 
 ---
 
 ## Quick start
 
+### TypeScript
+
 ```typescript
-// Node.js
-import { AfiClient } from "@afi-run/sdk"
+import { AfiClient, NETWORK, DEX, formatUnits } from "@afi-run/sdk"
 
-const client = new AfiClient({
-  rpcUrl: "https://rpc.ankr.com/base/YOUR_API_KEY",
-  privateKey: "0xYOUR_PRIVATE_KEY",
-})
+const client = new AfiClient({ rpcUrl: "https://rpc.ankr.com/base/YOUR_API_KEY" })
 
-// Recommended: quote first, then execute
-const quote = await client.getQuote({
-  tokenIn:  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC
-  tokenOut: "0x4200000000000000000000000000000000000006", // WETH
-  amountIn: 1000_000000n,  // 1000 USDC (raw wei, 6 decimals)
-  slippage: 0.5,           // 0.5%
-})
+// Fetch a quote
+const quote = await client
+  .quote("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC
+         "0x4200000000000000000000000000000000000006", // WETH
+         "1000")
+  .slippage(0.5)
+  .get()
 
-console.log("Expected out:", quote.amountOutWei)
-console.log("Minimum out: ", quote.minOutWei)  // enforced on-chain
+console.log(`You get: ~${quote.amountOut} WETH`)
+console.log(`Minimum: ${quote.minOut} WETH`)
 
+// Connect signer and execute
+client.connect("0xYOUR_PRIVATE_KEY")
 const result = await client.executeSwap(quote)
-console.log("Tx hash:", result.txHash)
-console.log("Got:    ", result.amountOut, "wei WETH")
+console.log("Tx:", result.txHash)
+console.log("Got:", formatUnits(result.amountOut, 18), "WETH")
+
+// Or in one call
+const result2 = await client
+  .quote(USDC, WETH, "500")
+  .slippage(1.0)
+  .execute()
 ```
 
+### Go
+
 ```go
-// Go
-client, _ := afi.NewClient(afi.Config{
-    RPCURL:     "https://rpc.ankr.com/base/YOUR_API_KEY",
-    PrivateKey: "YOUR_PRIVATE_KEY",
-})
+client, _ := afi.NewClient(afi.Config{RPCURL: "https://rpc.ankr.com/base/YOUR_API_KEY"})
 defer client.Close()
 
-amountIn, _ := afi.ParseUnits("1000", 6) // 1000 USDC
+// Fetch a quote
+quote, _ := client.GetQuote(ctx,
+    afi.From(common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"), afi.WETH, "1000"),
+    afi.WithSlippage(0.5),
+)
+fmt.Printf("You get: ~%s WETH\n", quote.AmountOut)
 
-quote, _ := client.GetQuote(ctx, afi.SwapParams{
-    TokenIn:  common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
-    TokenOut: afi.WETH,
-    AmountIn: amountIn,
-    Slippage: 0.5,
-})
-
+// Connect signer and execute
+client.Connect("YOUR_PRIVATE_KEY")
 result, _ := client.ExecuteSwap(ctx, quote)
-fmt.Println("Tx:", result.TxHash.Hex())
 fmt.Println("Got:", afi.FormatUnits(result.AmountOut, 18), "WETH")
+
+// Or in one call
+result2, _ := client.Swap(ctx,
+    afi.From(usdc, afi.WETH, "500"),
+    afi.WithSlippage(1.0),
+)
 ```
 
 ---
 
 ## API reference
 
-### `getTokens()` — discover available tokens
+### `getTokens(network?)` / `GetTokens(ctx, network?)`
 
 ```typescript
-const tokens = await client.getTokens()
-// Token[] — tokens active on Base
+const tokens = await client.getTokens()               // Base (default)
+const bscTokens = await client.getTokens(NETWORK.BSC) // BSC
 
-// Token shape:
-// {
-//   address:  "0x833589..."
-//   symbol:   "USDC"
-//   decimals: 6
-//   active:   true
-// }
+// Token shape: { address, symbol, decimals, active }
 ```
 
-Hits `GET https://rpc.afi.run/info` and returns the list of tokens
-supported on Base. Call this once at startup to let users pick from
-valid token addresses. No private key or on-chain interaction needed.
-
 ```go
-// Go
-tokens, err := client.GetTokens(ctx)
-for _, t := range tokens {
-    fmt.Printf("%s → %s\n", t.Symbol, t.Address.Hex())
+tokens, _ := client.GetTokens(ctx)                    // Base (default)
+bscTokens, _ := client.GetTokens(ctx, afi.NetworkBSC) // BSC
+```
+
+---
+
+### `quote(tokenIn, tokenOut, amountIn)` / `GetQuote(ctx, ...opts)`
+
+Returns a `QuoteBuilder` (TypeScript) or uses functional options (Go).
+
+**Builder methods (TypeScript):**
+
+| Method | Default | Description |
+|---|---|---|
+| `.slippage(v)` | `0.5` | Slippage tolerance percentage |
+| `.maxHops(n)` | `2` | Maximum number of route hops |
+| `.network(n)` | `NETWORK.BASE` | Target network |
+| `.priceBase(s)` | — | Base asset for price fields; populates `tokenInBasePrice`/`tokenOutBasePrice` |
+| `.dexs(...dexs)` | — | Restrict routing to specific DEXes |
+| `.blockNumber(n)` | `"latest"` | Quote at a specific block |
+| `.rpcUrls(...urls)` | client default | Custom RPC endpoints |
+| `.get()` | — | Fetch and return `Quote` |
+| `.execute()` | — | Fetch and execute swap (requires signer) |
+
+```typescript
+// Accepts address strings or Token objects
+const tokens = await client.getTokens()
+const usdc = tokens.find(t => t.symbol === "USDC")!
+const weth = tokens.find(t => t.symbol === "WETH")!
+
+const quote = await client
+  .quote(usdc, weth, "1000")         // Token objects accepted directly
+  .slippage(0.5)
+  .maxHops(3)
+  .network(NETWORK.BASE)
+  .priceBase("USDC")                 // optional — adds tokenInBasePrice/tokenOutBasePrice
+  .dexs(DEX.UNI_V3, DEX.AERODROME)  // optional — restrict DEXes
+  .get()
+
+if (quote.tokenInBasePrice) {
+  console.log(`USDC base price: $${quote.tokenInBasePrice}`)
 }
 ```
 
----
+**Functional options (Go):**
 
-### `getQuote(params)` — fetch a price quote
+| Option | Default | Description |
+|---|---|---|
+| `From(tokenIn, tokenOut, amountIn)` | required | Token pair and input amount |
+| `WithSlippage(v)` | `0.5` | Slippage tolerance percentage |
+| `WithMaxHops(n)` | `2` | Maximum number of route hops |
+| `OnNetwork(n)` | `NetworkBase` | Target network |
+| `WithPriceBase(s)` | — | Base asset for price fields |
+| `WithDexs(dexs...)` | — | Restrict routing to specific DEXes |
+| `WithBlockNumber(n)` | `"latest"` | Quote at a specific block |
+| `WithRpcUrls(urls...)` | client default | Custom RPC endpoints |
 
-```typescript
-const quote = await client.getQuote({
-  tokenIn:  "0x...",               // input token address
-  tokenOut: "0x...",               // output token address
-  amountIn: parseUnits("1000", 6), // 1000 USDC — use parseUnits to avoid raw wei
-  slippage: 0.5,                   // percentage, e.g. 0.5 = 0.5%
-})
+```go
+// From() accepts common.Address or afi.Token
+tokens, _ := client.GetTokens(ctx)
+var usdc, weth afi.Token
+for _, t := range tokens {
+    switch t.Symbol {
+    case "USDC": usdc = t
+    case "WETH": weth = t
+    }
+}
+
+quote, _ := client.GetQuote(ctx,
+    afi.From(usdc, weth, "1000"),             // Token objects accepted directly
+    afi.WithSlippage(0.5),
+    afi.WithMaxHops(3),
+    afi.OnNetwork(afi.NetworkBase),
+    afi.WithPriceBase("USDC"),                // optional
+    afi.WithDexs(afi.DexUniV3, afi.DexAerodrome), // optional
+)
+if quote.TokenInBasePrice != "" {
+    fmt.Printf("USDC base price: $%s\n", quote.TokenInBasePrice)
+}
 ```
 
-**Read-only** — no transaction is sent. Safe to call at any frequency to
-show live pricing. Internally it:
-
-1. Reads `decimals()` from the input token contract
-2. Reads `feeBps()` from the AFI contract (live — fee can change)
-3. Calls `POST https://rpc.afi.run/quoter` with your RPC URL
-
-**Quote fields:**
+**`Quote` fields:**
 
 | Field | Type | Description |
 |---|---|---|
-| `amountInWei` | `bigint` | Exact amount to approve and send |
-| `amountOutWei` | `bigint` | Estimated output (informational) |
-| `minOutWei` | `bigint` | Minimum output after slippage — enforced on-chain |
-| `steps` | `Hex` | Encoded route passed to `Afi.swap()` — do not modify |
+| `tokenIn` | `Address` | Input token address |
+| `tokenOut` | `Address` | Output token address |
+| `amountIn` | `string` | Human-readable input amount |
+| `amountOut` | `string` | Human-readable estimated output |
+| `minOut` | `string` | Minimum output after slippage |
+| `amountInWei` | `bigint` | Input as Wei — use for `approve()` |
+| `amountOutWei` | `bigint` | Estimated output as Wei |
+| `minOutWei` | `bigint` | Minimum output as Wei — enforced on-chain |
+| `steps` | `Hex` | Encoded route — passed to `Afi.swap()` |
 | `path` | `Address[]` | Token addresses in the route |
-| `slippage` | `number` | Applied slippage percentage |
-| `feeBps` | `number` | Protocol fee at the time of quote (basis points) |
-
-**Important:** `minOutWei` is never 0. The SDK rejects quotes with zero minimum output.
-
----
-
-### `executeSwap(quote)` — execute a pre-fetched quote
-
-```typescript
-const result = await client.executeSwap(quote)
-```
-
-Takes a `Quote` returned by `getQuote()` and runs the full execution flow:
-
-```
-1. assertBalance     — verifies tokenIn balance ≥ amountInWei
-2. approve           — approves exactly amountInWei to AFI contract
-                       (skipped if existing allowance is already sufficient)
-3. simulate          — runs eth_call before sending — throws if swap would revert
-4. swap              — sends the transaction with 1.2× gas estimate
-5. parse event       — waits for receipt, reads actual amounts from SwapExecuted
-```
-
-**Why simulate first?** If the swap would revert (e.g. price moved past
-`minOut`), `SimulationFailedError` is thrown before any gas is spent.
-
-**Result fields:**
-
-| Field | Type | Description |
-|---|---|---|
-| `txHash` | `Hex` | Transaction hash |
-| `blockNumber` | `bigint` | Block where the swap was confirmed |
-| `amountIn` | `bigint` | Actual input from on-chain `SwapExecuted` event |
-| `amountOut` | `bigint` | Actual output from on-chain `SwapExecuted` event |
-| `gasUsed` | `bigint` | Gas consumed by the transaction |
+| `hops` | `Hop[]` | Per-hop breakdown |
+| `slippage` | `number` | Applied slippage |
+| `feeBps` | `number` | Protocol fee (basis points) |
+| `tokenInPrice` | `string` | Exchange rate of tokenIn in tokenOut |
+| `tokenOutPrice` | `string` | Exchange rate of tokenOut in tokenIn |
+| `tokenInBasePrice?` | `string` | Price of tokenIn in priceBase asset |
+| `tokenOutBasePrice?` | `string` | Price of tokenOut in priceBase asset |
 
 ---
 
-### `swap(params)` — convenience: quote + execute in one call
+### `getFeeBps()` / `GetFeeBps(ctx)`
 
-```typescript
-const result = await client.swap({
-  tokenIn:  "0x...",
-  tokenOut: "0x...",
-  amountIn: 500_000000n,
-  slippage: 1.0,
-})
-```
-
-Equivalent to `const q = await getQuote(params); return executeSwap(q)`.
-
-Use this for bots and scripts. For user-facing apps, prefer the
-`getQuote` → show pricing → `executeSwap` pattern so users can review
-before confirming.
+Reads `feeBps` from the AFI contract. Already included in every `Quote`.
 
 ---
 
-### `approve(tokenIn, amountWei)` — approve only
+### `setApiUrl(url)` / `SetApiURL(url)`
+
+Changes the base URL for API calls (default: `https://rpc.afi.run`). Useful for local development.
 
 ```typescript
-const txHash = await client.approve(tokenIn, quote.amountInWei)
-// Returns null if allowance was already sufficient (no tx sent)
-```
-
-Approves exactly `amountWei` — no more — to the AFI contract.
-
-`executeSwap()` calls this automatically. Use it directly only if your
-app needs to show the approve and swap as two separate wallet prompts.
-
-**Safety details:**
-- Checks existing allowance on-chain first — skips if already sufficient
-- Resets to 0 before re-approving for USDT-style tokens that require it
-- Re-verifies allowance on-chain after the approval tx confirms
-
----
-
-### `getFeeBps()` — read current protocol fee
-
-```typescript
-const feeBps = await client.getFeeBps()
-// e.g. 35 → 0.35%
-```
-
-Reads `feeBps` directly from the AFI contract. The fee can change and
-is already included in every `Quote` object returned by `getQuote()`.
-
----
-
-### `parseUnits(amount, decimals)` / `formatUnits(amount, decimals)` — unit helpers
-
-```typescript
-import { parseUnits, formatUnits } from "@afi-run/sdk"
-
-// Human-readable → raw wei (bigint) — use as amountIn
-parseUnits("1000", 6)          // 1000_000000n  (1000 USDC)
-parseUnits("1.5", 6)           // 1_500000n
-parseUnits("0.5", 18)          // 500000000000000000n  (0.5 WETH)
-
-// Raw wei (bigint) → human-readable — use to display amounts
-formatUnits(1000_000000n, 6)   // "1000"
-formatUnits(1_500000n, 6)      // "1.5"
-formatUnits(500000000000000000n, 18) // "0.5"
+client.setApiUrl("http://localhost:8080")  // returns this
 ```
 
 ```go
-// Go
-wei, err := afi.ParseUnits("1000", 6)   // big.Int 1000_000000
-str := afi.FormatUnits(wei, 6)          // "1000"
+client.SetApiURL("http://localhost:8080")  // returns *Client
 ```
 
-These helpers let you work with the amounts your users type instead of raw wei:
+---
+
+### Signer methods — require `connect(privateKey)` first
+
+#### `connect(privateKey)` / `Connect(privateKey)`
 
 ```typescript
-// Without helpers
-const quote = await client.getQuote({
-  amountIn: 1000_000000n,  // must know USDC has 6 decimals
-  ...
-})
+client.connect("0xYOUR_PRIVATE_KEY")          // returns this
+// or pass at construction: new AfiClient({ rpcUrl, privateKey })
+```
 
-// With helpers
-const quote = await client.getQuote({
-  amountIn: parseUnits("1000", 6),  // readable
-  ...
-})
+```go
+err := client.Connect("YOUR_PRIVATE_KEY")
+```
+
+#### `executeSwap(quote)` / `ExecuteSwap(ctx, quote)`
+
+Full execution flow from a pre-fetched quote:
+
+```
+balance check → approve (exact) → simulate → swap → wait
+```
+
+#### `approve(tokenIn, amountWei)` / `Approve(ctx, token, amountWei)`
+
+Returns `PendingTx | null`. `null` means allowance was already sufficient.
+
+#### `simulate(quote, log?)` / `Simulate(ctx, quote, log?)`
+
+Dry-run via `eth_call`. Returns `true` if the swap would succeed.
+
+#### `submitSwap(quote)` / `SubmitSwap(ctx, quote)`
+
+Sends the swap tx. Returns `PendingSwap` with immediate `txHash`.
+
+#### `swap(params)` / `Swap(ctx, ...opts)`
+
+One-call convenience: equivalent to `GetQuote(...)` + `ExecuteSwap(quote)`.
+
+---
+
+## Networks
+
+```typescript
+import { NETWORK } from "@afi-run/sdk"
+// NETWORK.BASE | NETWORK.BSC | NETWORK.ARBITRUM | NETWORK.ETHEREUM | NETWORK.UNICHAIN
+```
+
+```go
+// afi.NetworkBase | afi.NetworkBSC | afi.NetworkArbitrum | afi.NetworkEthereum | afi.NetworkUnichain
+```
+
+## DEX constants
+
+```typescript
+import { DEX } from "@afi-run/sdk"
+// DEX.UNI_V3 | DEX.UNI_V4 | DEX.CAKE_V3 | DEX.AERODROME
+// DEX.BALANCER | DEX.CURVE128 | DEX.CURVE256 | DEX.FLUID
+```
+
+```go
+// afi.DexUniV3 | afi.DexUniV4 | afi.DexCakeV3 | afi.DexAerodrome
+// afi.DexBalancer | afi.DexCurve128 | afi.DexCurve256 | afi.DexFluid
 ```
 
 ---
 
-## Approval: why always exact?
+## Staged flow
 
-The SDK approves exactly the amount from the quote — never more. This means:
+```typescript
+const client = new AfiClient({ rpcUrl: "..." })
 
-- Even if the AFI contract were compromised, an attacker could only spend the
-  amount you were already going to spend in that specific swap
-- If you swap frequently, you'll send one approval transaction per swap
-- `executeSwap()` skips the approval if your existing allowance is already sufficient
+const quote = await client
+  .quote(USDC, WETH, "1000")
+  .slippage(0.5)
+  .get()
 
----
+client.connect("0x...")
 
-## Security guarantees
+// 1. Approve
+const approval = await client.approve(quote.tokenIn, quote.amountInWei)
+if (approval) {
+  await approval.wait()
+}
 
-| Risk | How the SDK handles it |
-|---|---|
-| Slippage bypass | `minOut` always comes from the quoter API — never set to 0 |
-| Approve too much | Always approves exactly `amountInRaw` from the quote |
-| USDT-style tokens | Resets allowance to 0 before re-approving if needed |
-| Tx reverts | `eth_call` simulation runs before every swap — fails fast |
-| Race condition (allow vs swap) | Allowance re-verified on-chain after approval confirms |
-| Gas underestimate | Gas estimated on-chain then multiplied by 1.2 |
-| Native ETH passed | Not supported — use WETH: `0x4200000000000000000000000000000000000006` |
+// 2. Simulate
+const ok = await client.simulate(quote, console.error)
+if (!ok) return
+
+// 3. Submit
+const pending = await client.submitSwap(quote)
+console.log(`Swap tx: ${pending.txHash}`)
+
+// 4. Wait
+const result = await pending.wait()
+console.log(`Got: ${formatUnits(result.amountOut, 18)} WETH`)
+```
+
+```go
+client, _ := afi.NewClient(afi.Config{RPCURL: "..."})
+
+quote, _ := client.GetQuote(ctx,
+    afi.From(usdc, afi.WETH, "1000"),
+    afi.WithSlippage(0.5),
+)
+
+client.Connect("YOUR_KEY")
+
+// 1. Approve
+approval, _ := client.Approve(ctx, usdc, quote.AmountInWei)
+if approval != nil {
+    approval.Wait(ctx)
+}
+
+// 2. Simulate
+ok, _ := client.Simulate(ctx, quote, func(r string) { fmt.Println("Failed:", r) })
+if !ok { return }
+
+// 3. Submit
+pending, _ := client.SubmitSwap(ctx, quote)
+fmt.Println("Swap:", pending.TxHash)
+
+// 4. Wait
+result, _ := pending.Wait(ctx)
+fmt.Println("Got:", afi.FormatUnits(result.AmountOut, 18), "WETH")
+```
 
 ---
 
@@ -290,39 +350,17 @@ The SDK approves exactly the amount from the quote — never more. This means:
 ### Node.js
 
 ```typescript
-import {
-  InsufficientBalanceError,
-  SimulationFailedError,
-  QuoteError,
-  ApprovalError,
-  SwapRevertedError,
-} from "@afi-run/sdk"
+import { NoSignerError, InsufficientBalanceError, SimulationFailedError, QuoteError } from "@afi-run/sdk"
 
 try {
   const result = await client.executeSwap(quote)
 } catch (e) {
   if (e instanceof InsufficientBalanceError) {
-    // User doesn't have enough tokenIn
-    console.log("Balance:", e.balance)   // bigint, raw wei
-    console.log("Required:", e.required) // bigint, raw wei
-    console.log("Token:", e.token)       // address string
-
+    console.log("Balance:", e.balance, "Required:", e.required)
   } else if (e instanceof SimulationFailedError) {
-    // Swap would revert — no transaction was sent, no gas spent
-    console.log("Reason:", e.reason)       // decoded revert string
-    console.log("Data:", e.revertData)     // raw revert bytes (optional)
-
+    console.log("Would revert:", e.reason)  // no tx was sent
   } else if (e instanceof QuoteError) {
-    // Quoter API returned an error (e.g. no route found)
-    console.log(e.message)
-
-  } else if (e instanceof ApprovalError) {
-    // Token approval transaction failed
-    console.log(e.message)
-
-  } else if (e instanceof SwapRevertedError) {
-    // Swap transaction reverted on-chain
-    console.log("Reason:", e.reason)
+    console.log("No route:", e.message)
   }
 }
 ```
@@ -330,8 +368,6 @@ try {
 ### Go
 
 ```go
-import "errors"
-
 result, err := client.ExecuteSwap(ctx, quote)
 if err != nil {
     var afiErr *afi.AfiError
@@ -340,19 +376,28 @@ if err != nil {
         case "INSUFFICIENT_BALANCE":
             fmt.Println("Not enough balance")
         case "SIMULATION_FAILED":
-            // No tx was sent
-            fmt.Println("Would revert:", afiErr.Message)
+            fmt.Println("Would revert:", afiErr.Message) // no tx was sent
         case "QUOTE_FAILED":
-            fmt.Println("No route found:", afiErr.Message)
-        case "APPROVAL_FAILED":
-            fmt.Println("Approval failed:", afiErr.Message)
-        case "SWAP_REVERTED":
-            fmt.Println("Swap reverted:", afiErr.Message)
+            fmt.Println("No route:", afiErr.Message)
         }
-        return
     }
-    log.Fatal(err) // unexpected error
 }
+```
+
+---
+
+## Unit helpers
+
+```typescript
+import { parseUnits, formatUnits } from "@afi-run/sdk"
+
+parseUnits("1000", 6)    // 1000000000n
+formatUnits(1000000n, 6) // "1000"
+```
+
+```go
+wei, _ := afi.ParseUnits("1000", 6)   // big.Int
+str   := afi.FormatUnits(wei, 6)      // "1000"
 ```
 
 ---
@@ -363,18 +408,8 @@ if err != nil {
 |---|---|
 | AFI contract (Base) | `0xB8cC65321d169D55b93b4402D795701c6B308ce4` |
 | WETH (Base) | `0x4200000000000000000000000000000000000006` |
-| Quoter API | `https://rpc.afi.run/quoter` |
-| Info API | `https://rpc.afi.run/info` |
-| Chain ID | `8453` |
-
-```typescript
-import { AFI_ADDRESS, WETH } from "@afi-run/sdk"
-```
-
-```go
-afi.AfiAddress // common.Address
-afi.WETH       // common.Address
-```
+| API base URL | `https://rpc.afi.run` |
+| Chain ID (Base) | `8453` |
 
 ---
 
@@ -384,35 +419,21 @@ afi.WETH       // common.Address
 
 | File | What it shows |
 |---|---|
-| `examples/nodejs/1-list-tokens.ts` | List all supported tokens |
-| `examples/nodejs/2-get-quote.ts` | Fetch and inspect a quote |
-| `examples/nodejs/3-execute-swap.ts` | Quote → review → execute (recommended) |
-| `examples/nodejs/4-full-flow.ts` | One-call convenience swap |
-| `examples/nodejs/5-approve-only.ts` | Separate approve and swap steps |
-
-```bash
-cd nodejs
-npm install
-npx ts-node ../examples/nodejs/1-list-tokens.ts
-```
+| `examples/nodejs/1-list-tokens.ts` | List tokens on Base and BSC |
+| `examples/nodejs/2-get-quote.ts` | Builder with all options (priceBase, dexs, Token objects) |
+| `examples/nodejs/3-execute-swap.ts` | Quote → review → execute |
+| `examples/nodejs/4-full-flow.ts` | One-call `.execute()` with variations |
+| `examples/nodejs/5-approve-only.ts` | Staged flow: approve, simulate, submit, wait |
 
 ### Go
 
 | Directory | What it shows |
 |---|---|
-| `examples/go/list-tokens/` | List all supported tokens |
-| `examples/go/get-quote/` | Fetch and inspect a quote |
-| `examples/go/execute-swap/` | Quote → review → execute (recommended) |
-| `examples/go/full-flow/` | One-call convenience swap |
-| `examples/go/approve-only/` | Separate approve and swap steps |
-
-```bash
-cd examples/go
-go mod tidy
-go run ./list-tokens
-go run ./get-quote
-go run ./execute-swap
-```
+| `examples/go/list-tokens/` | List tokens on Base and BSC |
+| `examples/go/get-quote/` | Functional options with all params (priceBase, dexs, Token objects) |
+| `examples/go/execute-swap/` | Quote → review → execute |
+| `examples/go/full-flow/` | One-call Swap() with variations |
+| `examples/go/approve-only/` | Staged flow: approve, simulate, submit, wait |
 
 ---
 
@@ -420,13 +441,8 @@ go run ./execute-swap
 
 ```bash
 # Node.js
-cd nodejs
-npm install
-npm run build        # outputs to dist/
-npm run typecheck    # type check only
+cd nodejs && npm install && npm run build
 
 # Go
-cd go
-go mod tidy
-go build ./...
+cd go && go build ./...
 ```

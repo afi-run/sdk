@@ -52,3 +52,10 @@ export class SwapRevertedError extends AfiError {
     this.name = "SwapRevertedError"
   }
 }
+
+export class NoSignerError extends AfiError {
+  constructor() {
+    super("Private key required — create the client with privateKey or call connect()", "NO_SIGNER")
+    this.name = "NoSignerError"
+  }
+}

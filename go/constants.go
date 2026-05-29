@@ -9,7 +9,7 @@ var (
 
 const (
 	BaseChainID = int64(8453)
-	QuoterURL   = "https://rpc.afi.run/quoter"
+	APIBaseURL  = "https://rpc.afi.run"
 )
 
 const afiABIJSON = `[

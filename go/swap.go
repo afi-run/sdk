@@ -34,7 +34,7 @@ func simulateSwap(ctx context.Context, client *ethclient.Client, afiABI abi.ABI,
 	return nil
 }
 
-func executeSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote) (*SwapResult, error) {
+func submitSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote) (*PendingSwap, error) {
 	input, err := afiABI.Pack("swap", q.TokenIn, q.AmountInWei, q.TokenOut, q.MinOutWei, q.Steps)
 	if err != nil {
 		return nil, fmt.Errorf("pack swap: %w", err)
@@ -45,29 +45,32 @@ func executeSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote) (*Swa
 		return nil, ErrSwapReverted(err.Error())
 	}
 
-	receipt, err := c.waitReceipt(ctx, txHash)
-	if err != nil {
-		return nil, err
+	pending := &PendingSwap{
+		TxHash: txHash,
+		waitFn: func(ctx context.Context) (*SwapResult, error) {
+			receipt, err := c.waitReceipt(ctx, txHash)
+			if err != nil {
+				return nil, err
+			}
+			if receipt.Status == types.ReceiptStatusFailed {
+				return nil, ErrSwapReverted("transaction failed on-chain")
+			}
+			amountIn, amountOut, err := parseSwapExecuted(afiABI, receipt)
+			if err != nil {
+				return nil, err
+			}
+			return &SwapResult{
+				TxHash:      receipt.TxHash,
+				BlockNumber: receipt.BlockNumber.Uint64(),
+				AmountIn:    amountIn,
+				AmountOut:   amountOut,
+				TokenIn:     q.TokenIn,
+				TokenOut:    q.TokenOut,
+				GasUsed:     receipt.GasUsed,
+			}, nil
+		},
 	}
-
-	if receipt.Status == types.ReceiptStatusFailed {
-		return nil, ErrSwapReverted("transaction failed on-chain")
-	}
-
-	amountIn, amountOut, err := parseSwapExecuted(afiABI, receipt)
-	if err != nil {
-		return nil, err
-	}
-
-	return &SwapResult{
-		TxHash:      receipt.TxHash,
-		BlockNumber: receipt.BlockNumber.Uint64(),
-		AmountIn:    amountIn,
-		AmountOut:   amountOut,
-		TokenIn:     q.TokenIn,
-		TokenOut:    q.TokenOut,
-		GasUsed:     receipt.GasUsed,
-	}, nil
+	return pending, nil
 }
 
 func parseSwapExecuted(afiABI abi.ABI, receipt *types.Receipt) (*big.Int, *big.Int, error) {

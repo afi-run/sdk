@@ -1,10 +1,13 @@
-// Example 5: Approve only (for apps that manage the flow step by step)
+// Example 5: Staged flow — full control over each step
 //
-// Some apps need to separate the approve step from the swap step —
-// for example, to show two distinct prompts to the user.
+//  1. Fetch quote with GetQuote()
+//  2. Connect signer
+//  3. Approve  — get txHash immediately, wait separately
+//  4. Simulate — dry-run before spending gas
+//  5. Submit   — send the swap tx, get txHash immediately
+//  6. Wait     — block until confirmed, get SwapResult
 //
-// Approve() approves exactly the amount from the quote — no more.
-// If the allowance is already sufficient, no transaction is sent (returns "").
+// Use this in apps that need step-by-step wallet prompts and progress UI.
 //
 // Run: go run ./examples/go/approve-only
 package main
@@ -19,9 +22,9 @@ import (
 )
 
 func main() {
+	// Step 1: Read-only client — no private key needed for quotes
 	client, err := afi.NewClient(afi.Config{
-		RPCURL:     "https://rpc.ankr.com/base/YOUR_API_KEY",
-		PrivateKey: "YOUR_PRIVATE_KEY",
+		RPCURL: "https://rpc.ankr.com/base/YOUR_API_KEY",
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -31,43 +34,69 @@ func main() {
 	ctx := context.Background()
 	usdc := common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
 
-	amountIn, err := afi.ParseUnits("200", 6) // 200 USDC
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 1. Get quote first — it tells us exactly how much to approve
-	quote, err := client.GetQuote(ctx, afi.SwapParams{
-		TokenIn:  usdc,
-		TokenOut: afi.WETH,
-		AmountIn: amountIn,
-		Slippage: 0.5,
-	})
+	// Step 2: Fetch quote — no signer required
+	quote, err := client.GetQuote(ctx,
+		afi.From(usdc, afi.WETH, "200"),
+		afi.WithSlippage(0.5),
+		afi.OnNetwork(afi.NetworkBase),
+	)
 	if err != nil {
 		log.Fatal("get quote:", err)
 	}
 
-	// 2. Approve step (wallet prompt #1)
-	fmt.Printf("Approving %s USDC...\n", afi.FormatUnits(quote.AmountInWei, 6))
-	approveTx, err := client.Approve(ctx, usdc, quote.AmountInWei)
+	fmt.Printf("Quote: %s USDC → ~%s WETH\n", quote.AmountIn, quote.AmountOut)
+	fmt.Printf("Minimum: %s WETH  (%.1f%% slippage)\n", quote.MinOut, quote.Slippage)
+
+	// Step 3: Connect signer when the user is ready to transact
+	if err := client.Connect("YOUR_PRIVATE_KEY"); err != nil {
+		log.Fatal("connect:", err)
+	}
+
+	// Step 4: Approve — txHash available immediately, wait separately
+	approval, err := client.Approve(ctx, usdc, quote.AmountInWei)
 	if err != nil {
 		log.Fatal("approve:", err)
 	}
 
-	if approveTx == "" {
+	if approval == nil {
 		fmt.Println("Allowance already sufficient — approval skipped.")
 	} else {
-		fmt.Printf("Approval tx: %s\n", approveTx)
+		fmt.Printf("Approval submitted: %s\n", approval.TxHash)
+		approvalReceipt, err := approval.Wait(ctx)
+		if err != nil {
+			log.Fatal("wait approval:", err)
+		}
+		fmt.Printf("Approval confirmed in block %d\n", approvalReceipt.BlockNumber)
 	}
 
-	// 3. Swap step (wallet prompt #2)
-	// ExecuteSwap() re-checks allowance internally before sending,
-	// so it's safe to call even if some time passed since Approve.
-	fmt.Println("Executing swap...")
-	result, err := client.ExecuteSwap(ctx, quote)
+	// Step 5: Simulate — check before spending gas
+	ok, err := client.Simulate(ctx, quote, func(reason string) {
+		fmt.Printf("Simulation failed: %s\n", reason)
+	})
 	if err != nil {
-		log.Fatal("execute swap:", err)
+		log.Fatal("simulate:", err)
+	}
+	if !ok {
+		fmt.Println("Swap would revert — cancelled.")
+		return
 	}
 
-	fmt.Printf("Swap confirmed: %s\n", result.TxHash.Hex())
+	// Step 6: Submit — send the swap tx, get txHash immediately
+	pending, err := client.SubmitSwap(ctx, quote)
+	if err != nil {
+		log.Fatal("submit swap:", err)
+	}
+	fmt.Printf("Swap submitted: %s\n", pending.TxHash)
+
+	// Step 7: Wait for on-chain confirmation
+	result, err := pending.Wait(ctx)
+	if err != nil {
+		log.Fatal("wait swap:", err)
+	}
+
+	fmt.Println("\nSwap confirmed!")
+	fmt.Printf("  Tx hash:    %s\n", result.TxHash.Hex())
+	fmt.Printf("  Block:      %d\n", result.BlockNumber)
+	fmt.Printf("  Amount out: %s WETH\n", afi.FormatUnits(result.AmountOut, 18))
+	fmt.Printf("  Gas used:   %d\n", result.GasUsed)
 }

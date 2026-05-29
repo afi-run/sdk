@@ -2,7 +2,7 @@ import type { Account, PublicClient, Transport, WalletClient } from "viem"
 import type { base } from "viem/chains"
 import { AFI_ADDRESS, ERC20_ABI } from "./constants.js"
 import { ApprovalError, InsufficientBalanceError } from "./errors.js"
-import type { Address } from "./types.js"
+import type { Address, PendingTx, TxReceipt } from "./types.js"
 
 type BasePublicClient = PublicClient<Transport, typeof base>
 type BaseWalletClient = WalletClient<Transport, typeof base, Account>
@@ -97,4 +97,54 @@ export async function ensureExactApproval(
   }
 
   return hash
+}
+
+/**
+ * Sends the approve tx and returns a PendingTx without waiting for confirmation.
+ * Returns null if existing allowance is already sufficient.
+ * The USDT-style reset pre-step still waits internally before sending the real approval.
+ */
+export async function submitApproval(
+  token: Address,
+  owner: Address,
+  amount: bigint,
+  publicClient: BasePublicClient,
+  walletClient: BaseWalletClient,
+): Promise<PendingTx | null> {
+  const current = await getAllowance(token, owner, publicClient)
+  if (current >= amount) return null
+
+  if (current > 0n) {
+    try {
+      const resetHash = await walletClient.writeContract({
+        address: token,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [AFI_ADDRESS, 0n],
+      })
+      await publicClient.waitForTransactionReceipt({ hash: resetHash })
+    } catch { /* token doesn't require reset */ }
+  }
+
+  let hash: `0x${string}`
+  try {
+    hash = await walletClient.writeContract({
+      address: token,
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [AFI_ADDRESS, amount],
+    })
+  } catch (e) {
+    throw new ApprovalError((e as Error).message)
+  }
+
+  return {
+    txHash: hash,
+    wait: async (): Promise<TxReceipt> => {
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      const confirmed = await getAllowance(token, owner, publicClient)
+      if (confirmed < amount) throw new ApprovalError("allowance not reflected on-chain after confirmation")
+      return { blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed }
+    },
+  }
 }

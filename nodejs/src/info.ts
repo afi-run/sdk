@@ -1,14 +1,4 @@
-import type { Token } from "./types.js"
-
-const INFO_URL = "https://rpc.afi.run/info"
-
-interface InfoResponse {
-  status: "success" | "error"
-  data?: {
-    base?: RawToken[]
-    [network: string]: RawToken[] | undefined
-  }
-}
+import type { Network, Token } from "./types.js"
 
 interface RawToken {
   address: string
@@ -17,10 +7,21 @@ interface RawToken {
   active: boolean
 }
 
-export async function fetchTokens(): Promise<Token[]> {
+interface InfoResponse {
+  status: "success" | "error"
+  data?: Record<string, RawToken[] | undefined>
+}
+
+export async function fetchTokens(network: Network, infoUrl: string): Promise<Token[]> {
+  return fetchTokensFrom(network, infoUrl)
+}
+
+export async function fetchTokensFrom(network: Network, url: string): Promise<Token[]> {
+  const fullUrl = `${url}?network=${network}`
+
   let res: Response
   try {
-    res = await fetch(INFO_URL)
+    res = await fetch(fullUrl)
   } catch (e) {
     throw new Error(`AFI info request failed: ${(e as Error).message}`)
   }
@@ -29,14 +30,19 @@ export async function fetchTokens(): Promise<Token[]> {
 
   const json = (await res.json()) as InfoResponse
 
-  if (json.status !== "success" || !json.data?.base) {
-    throw new Error("AFI info returned no data for base network")
+  if (json.status !== "success" || !json.data) {
+    throw new Error(`AFI info returned no data for network: ${network}`)
   }
 
-  return json.data.base.map((t) => ({
-    address: t.address as `0x${string}`,
-    symbol: t.symbol,
+  const raw = json.data[network]
+  if (!raw || raw.length === 0) {
+    throw new Error(`AFI info returned no tokens for network: ${network}`)
+  }
+
+  return raw.map((t) => ({
+    address:  t.address as `0x${string}`,
+    symbol:   t.symbol,
     decimals: t.decimals,
-    active: t.active,
+    active:   t.active,
   }))
 }
