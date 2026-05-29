@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<coverage generated="1780092357347" clover="3.2.0">
-  <project timestamp="1780092357347" name="All files">
+<coverage generated="1780092714142" clover="3.2.0">
+  <project timestamp="1780092714142" name="All files">
     <metrics statements="418" coveredstatements="416" conditionals="96" coveredconditionals="94" methods="31" coveredmethods="31" elements="545" coveredelements="541" complexity="0" loc="418" ncloc="418" packages="1" files="7" classes="7"/>
     <file name="builder.ts" path="/home/vanio/local/sdk/nodejs/src/builder.ts">
       <metrics statements="40" coveredstatements="40" conditionals="15" coveredconditionals="15" methods="11" coveredmethods="11"/>

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
 import { QuoteBuilder } from "../builder.js"
 import * as quoter from "../quoter.js"
 import { DEX, NETWORK, type Quote, type SwapResult } from "../types.js"
@@ -17,7 +17,7 @@ interface FakeClient {
 }
 
 let client: FakeClient
-let fetchQuoteSpy: ReturnType<typeof vi.spyOn>
+let fetchQuoteSpy: MockInstance<typeof quoter.fetchQuote>
 
 beforeEach(() => {
   client = {
