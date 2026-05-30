@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+#
+# AFI SDK pre-push hook — mirrors CI locally.
+#
+# For every subproject whose files changed in the push range, runs:
+#   Node.js : typecheck + tests with coverage (≥95%) + npm audit (high+)
+#   Go      : vet + tests with coverage (≥95%) + examples build + govulncheck
+#
+# Install with:  scripts/install-hooks.sh
+# Skip once:     SKIP_PRE_PUSH=1 git push
+# Force full:    PRE_PUSH_ALL=1 git push     (run every check, ignore changed paths)
+#
+
+set -uo pipefail
+
+# ─── Allow opt-out ───────────────────────────────────────────────────────────
+if [[ "${SKIP_PRE_PUSH:-0}" == "1" ]]; then
+  echo "pre-push: skipped via SKIP_PRE_PUSH=1"
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# ─── Colour helpers ──────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_GREEN=$'\033[32m'
+  C_RED=$'\033[31m'
+  C_YELLOW=$'\033[33m'
+  C_BLUE=$'\033[34m'
+else
+  C_RESET= C_BOLD= C_GREEN= C_RED= C_YELLOW= C_BLUE=
+fi
+
+step()   { printf "\n%s▶%s %s%s%s\n"   "$C_BLUE"  "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
+ok()     { printf "%s✓%s %s\n"          "$C_GREEN" "$C_RESET" "$*"; }
+fail()   { printf "%s✗%s %s\n"          "$C_RED"   "$C_RESET" "$*" >&2; }
+warn()   { printf "%s!%s %s\n"          "$C_YELLOW" "$C_RESET" "$*"; }
+
+# ─── Determine which subprojects changed in the push range ──────────────────
+ZERO="0000000000000000000000000000000000000000"
+CHANGED_FILES=""
+
+if [[ "${PRE_PUSH_ALL:-0}" == "1" ]]; then
+  warn "PRE_PUSH_ALL=1 — running every check unconditionally"
+  CHANGED_FILES=$'nodejs/dummy\ngo/dummy\nexamples/go/dummy'
+elif [[ -t 0 ]]; then
+  # Invoked manually (no stdin from git). Compare working tree vs upstream.
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo main)"
+  CHANGED_FILES="$(git diff --name-only "$upstream"...HEAD 2>/dev/null || true)"
+else
+  # Standard pre-push protocol: stdin lines = "<local-ref> <local-sha> <remote-ref> <remote-sha>".
+  while read -r _ local_sha _ remote_sha; do
+    [[ "$local_sha" == "$ZERO" ]] && continue          # branch deletion
+    if [[ "$remote_sha" == "$ZERO" ]]; then
+      base="$(git merge-base "$local_sha" main 2>/dev/null || echo "$local_sha")"
+      CHANGED_FILES+=$'\n'"$(git diff --name-only "$base..$local_sha" 2>/dev/null || true)"
+    else
+      CHANGED_FILES+=$'\n'"$(git diff --name-only "$remote_sha..$local_sha" 2>/dev/null || true)"
+    fi
+  done
+fi
+
+changed_in() {
+  local path_prefix="$1"
+  grep -qE "^${path_prefix}/" <<<"$CHANGED_FILES" 2>/dev/null
+}
+
+RUN_NODE=0
+RUN_GO=0
+changed_in "nodejs" && RUN_NODE=1
+changed_in "go" && RUN_GO=1
+changed_in "examples/go" && RUN_GO=1
+# Also run both when the workflow files / hook itself changed.
+if grep -qE "^(\.github/|scripts/|README)" <<<"$CHANGED_FILES"; then
+  RUN_NODE=1 RUN_GO=1
+fi
+
+if [[ "$RUN_NODE" == "0" && "$RUN_GO" == "0" ]]; then
+  echo "pre-push: no relevant changes detected — nothing to do"
+  exit 0
+fi
+
+FAILED=()
+SECONDS=0
+
+# ─── Node.js ─────────────────────────────────────────────────────────────────
+if [[ "$RUN_NODE" == "1" ]]; then
+  if [[ ! -d nodejs ]]; then
+    warn "nodejs/ not present — skipping"
+  else
+    step "Node.js — typecheck"
+    if (cd nodejs && npm run --silent typecheck); then ok "typecheck OK"; else fail "typecheck"; FAILED+=("typecheck"); fi
+
+    step "Node.js — tests + coverage (≥95%)"
+    if (cd nodejs && npm run --silent test:coverage); then ok "tests + coverage OK"; else fail "tests/coverage"; FAILED+=("nodejs-coverage"); fi
+
+    step "Node.js — npm audit (high+)"
+    if (cd nodejs && npm audit --audit-level=high); then ok "no high/critical vulns"; else fail "npm audit"; FAILED+=("npm-audit"); fi
+  fi
+fi
+
+# ─── Go ──────────────────────────────────────────────────────────────────────
+if [[ "$RUN_GO" == "1" ]]; then
+  if [[ ! -d go ]]; then
+    warn "go/ not present — skipping"
+  else
+    step "Go — vet"
+    if (cd go && go vet ./...); then ok "vet OK"; else fail "go vet"; FAILED+=("go-vet"); fi
+
+    step "Go — tests + coverage (≥95%)"
+    if (cd go && make --no-print-directory test-coverage); then ok "tests + coverage OK"; else fail "go coverage"; FAILED+=("go-coverage"); fi
+
+    if [[ -d examples/go ]]; then
+      step "Go — examples build"
+      if (cd examples/go && go build ./...); then ok "examples build OK"; else fail "examples build"; FAILED+=("examples-build"); fi
+    fi
+
+    step "Go — govulncheck"
+    if ! command -v govulncheck >/dev/null 2>&1; then
+      warn "govulncheck not found — installing"
+      if ! go install golang.org/x/vuln/cmd/govulncheck@latest; then
+        fail "could not install govulncheck"; FAILED+=("govulncheck-install")
+      fi
+    fi
+    if command -v govulncheck >/dev/null 2>&1; then
+      if (cd go && govulncheck ./...); then ok "no known vulns"; else fail "govulncheck"; FAILED+=("govulncheck"); fi
+    fi
+  fi
+fi
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+echo
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+  printf "%spre-push passed in %ds%s\n" "$C_GREEN$C_BOLD" "$SECONDS" "$C_RESET"
+  exit 0
+fi
+
+printf "%spre-push failed (%ds): %s%s\n" "$C_RED$C_BOLD" "$SECONDS" "${FAILED[*]}" "$C_RESET" >&2
+echo "Re-run a single step locally, fix the issue, then push again." >&2
+echo "Bypass once with: SKIP_PRE_PUSH=1 git push" >&2
+exit 1

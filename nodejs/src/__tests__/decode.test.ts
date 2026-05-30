@@ -4,6 +4,7 @@ import {
   decodeRevertReason,
   describeDecodedRevert,
   ERROR_STRING_SELECTOR_HEX,
+  getRegisteredErrors,
   PANIC_SELECTOR_HEX,
   registerCustomErrors,
 } from "../decode.js"
@@ -89,7 +90,16 @@ describe("decodeRevertReason — fallbacks", () => {
   })
 })
 
-describe("registerCustomErrors", () => {
+describe("registerCustomErrors + getRegisteredErrors", () => {
+  it("ignores non-error ABI entries when registering", () => {
+    const before = getRegisteredErrors().length
+    registerCustomErrors([
+      { type: "function", name: "ignored", inputs: [] },
+      { type: "event", name: "alsoIgnored", inputs: [] },
+    ])
+    expect(getRegisteredErrors().length).toBe(before)
+  })
+
   it("decodes user-registered errors after registration", () => {
     const data = encodeRevert("MyContractError(uint256,string)", ["uint256", "string"], [42n, "details"])
 

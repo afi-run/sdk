@@ -3,7 +3,7 @@
 <html lang="en">
 
 <head>
-    <title>Code coverage report for utils.ts</title>
+    <title>Code coverage report for explorer.ts</title>
     <meta charset="utf-8" />
     <link rel="stylesheet" href="prettify.css" />
     <link rel="stylesheet" href="base.css" />
@@ -19,20 +19,20 @@
 <body>
 <div class='wrapper'>
     <div class='pad1'>
-        <h1><a href="index.html">All files</a> utils.ts</h1>
+        <h1><a href="index.html">All files</a> explorer.ts</h1>
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>16/16</span>
+                <span class='fraction'>12/12</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>7/7</span>
+                <span class='fraction'>6/6</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>16/16</span>
+                <span class='fraction'>12/12</span>
             </div>
         
             
@@ -86,51 +86,66 @@
 <a name='L21'></a><a href='#L21'>21</a>
 <a name='L22'></a><a href='#L22'>22</a>
 <a name='L23'></a><a href='#L23'>23</a>
-<a name='L24'></a><a href='#L24'>24</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">21x</span>
-<span class="cline-any cline-yes">21x</span>
-<span class="cline-any cline-yes">21x</span>
-<span class="cline-any cline-yes">21x</span>
+<a name='L24'></a><a href='#L24'>24</a>
+<a name='L25'></a><a href='#L25'>25</a>
+<a name='L26'></a><a href='#L26'>26</a>
+<a name='L27'></a><a href='#L27'>27</a>
+<a name='L28'></a><a href='#L28'>28</a>
+<a name='L29'></a><a href='#L29'>29</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">10x</span>
 <span class="cline-any cline-yes">10x</span>
 <span class="cline-any cline-yes">10x</span>
+<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">12x</span>
-<span class="cline-any cline-yes">12x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-yes">8x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">9x</span>
-<span class="cline-any cline-yes">9x</span>
-<span class="cline-any cline-yes">9x</span>
-<span class="cline-any cline-yes">9x</span>
-<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/** Converts a raw bigint wei amount to a human-readable decimal string. */
-export function formatAmount(amount: bigint, decimals: number): string {
-  const divisor = 10n ** BigInt(decimals)
-  const whole = amount / divisor
-  const frac = amount % divisor
-  if (frac === 0n) return whole.toString()
-  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "")
-  return `${whole}.${fracStr}`
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">import { NETWORK_EXPLORERS } from "./constants.js"
+import type { Network } from "./types.js"
+import { NETWORK } from "./types.js"
+&nbsp;
+function baseFor(network: Network, override?: string): string {
+  const base = override ?? NETWORK_EXPLORERS[network]
+  if (!base) throw new Error(`no explorer URL configured for network "${network}"`)
+  return base.replace(/\/+$/, "")
 }
 &nbsp;
-/** Converts a raw bigint wei amount to a human-readable decimal string.
- *  @example formatUnits(1000_000000n, 6) // "1000" */
-export function formatUnits(amount: bigint, decimals: number): string {
-  return formatAmount(amount, decimals)
+/**
+ * Returns the explorer URL for a transaction hash on `network` (default: BASE).
+ *
+ * @example
+ * txUrl("0xabc...")                       // https://basescan.org/tx/0xabc...
+ * txUrl("0xabc...", NETWORK.BSC)          // https://bscscan.com/tx/0xabc...
+ * txUrl(hash, NETWORK.BASE, "https://...")// custom explorer base
+ */
+export function txUrl(hash: string, network: Network = NETWORK.BASE, explorer?: string): string {
+  return `${baseFor(network, explorer)}/tx/${hash}`
 }
 &nbsp;
-/** Converts a human-readable decimal string to raw bigint wei.
- *  @example parseUnits("1000", 6) // 1000_000000n */
-export function parseUnits(amount: string, decimals: number): bigint {
-  const [whole, frac = ""] = amount.split(".")
-  const fracPadded = frac.padEnd(decimals, "0").slice(0, decimals)
-  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fracPadded || "0")
+/**
+ * Returns the explorer URL for an address on `network` (default: BASE).
+ */
+export function addressUrl(address: string, network: Network = NETWORK.BASE, explorer?: string): string {
+  return `${baseFor(network, explorer)}/address/${address}`
 }
 &nbsp;</pre></td></tr></table></pre>
 

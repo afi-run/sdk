@@ -101,6 +101,32 @@ describe("SwapResult serialize roundtrip", () => {
   })
 })
 
+describe("Quote serialize edge cases", () => {
+  it("fromJSON tolerates missing path/hops", () => {
+    const minimal = {
+      ...quoteToJSON(sampleQuote),
+      path: undefined,
+      hops: undefined,
+    } as any
+    const r = quoteFromJSON(minimal)
+    expect(r.path).toEqual([])
+    expect(r.hops).toEqual([])
+  })
+})
+
+describe("SwapResult serialize edge cases", () => {
+  it("fromJSON tolerates missing fee fields", () => {
+    const json = {
+      txHash: "0xabc", blockNumber: "1", amountIn: "10", amountOut: "20",
+      tokenIn: "0xaa", tokenOut: "0xbb", gasUsed: "100",
+      // effectiveGasPrice + feeWei missing
+    } as any
+    const r = swapResultFromJSON(json)
+    expect(r.effectiveGasPrice).toBe(0n)
+    expect(r.feeWei).toBe(0n)
+  })
+})
+
 describe("TokenInfo serialize roundtrip", () => {
   it("handles tokens with balance + allowance", () => {
     const info: TokenInfo = {

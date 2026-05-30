@@ -1441,6 +1441,32 @@ afi-sdk/
 └── examples/        ── exemplos ponta-a-ponta executáveis
 ```
 
+### Git hooks — `pre-push` espelha o CI localmente
+
+O repo já vem com um hook de pre-push que roda exatamente os mesmos gates do CI
+antes de qualquer `git push`, então você pega problemas em segundos em vez de
+esperar PR verde.
+
+```bash
+# Instalação única (define core.hooksPath = scripts/git-hooks)
+bash scripts/install-hooks.sh
+```
+
+No `git push`, o hook detecta quais subprojetos mudaram e roda:
+
+| Subprojeto | Etapas |
+|------------|--------|
+| **Node.js** (quando `nodejs/` mudou) | `typecheck` · `vitest run --coverage` (≥95% stmts/lines/fns, ≥90% branches) · `npm audit --audit-level=high` |
+| **Go** (quando `go/` ou `examples/go/` mudou) | `go vet` · `make test-coverage` (≥95%) · `go build` exemplos · `govulncheck` (instala se necessário) |
+
+Atalhos:
+
+```bash
+SKIP_PRE_PUSH=1 git push      # pular dessa vez
+PRE_PUSH_ALL=1  git push      # ignorar detecção de paths, rodar tudo
+git config --unset core.hooksPath   # remover o hook completamente
+```
+
 ### Estratégia de testes
 
 O SDK é **totalmente testado em unit** sem dependências externas: chamadas RPC

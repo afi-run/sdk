@@ -132,6 +132,26 @@ describe("fetchTokenInfoBatch", () => {
     expect(out[1]).toEqual({ address: TOKEN_B, symbol: "B", name: "Beta", decimals: 18 })
   })
 
+  it("throws when balance or allowance reverts for any token", async () => {
+    pub.multicall.mockResolvedValue([
+      { status: "success", result: "A" },
+      { status: "success", result: "Alpha" },
+      { status: "success", result: 6 },
+      { status: "failure", error: new Error("reverted") }, // balanceOf
+      { status: "success", result: 0n },
+    ])
+    await expect(fetchTokenInfoBatch([TOKEN_A], pub as any, OWNER)).rejects.toThrow(/balanceOf/)
+
+    pub.multicall.mockResolvedValue([
+      { status: "success", result: "A" },
+      { status: "success", result: "Alpha" },
+      { status: "success", result: 6 },
+      { status: "success", result: 0n },
+      { status: "failure", error: new Error("reverted") }, // allowance
+    ])
+    await expect(fetchTokenInfoBatch([TOKEN_A], pub as any, OWNER)).rejects.toThrow(/allowance/)
+  })
+
   it("packs balance + allowance per token when owner is provided", async () => {
     pub.multicall.mockResolvedValue([
       // token A: symbol, name, decimals, balance, allowance

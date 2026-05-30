@@ -174,6 +174,52 @@ func TestDecodedRevert_StringFormatting(t *testing.T) {
 	}
 }
 
+func TestErrSwapRevertedDecoded_Roundtrip(t *testing.T) {
+	d := &DecodedRevert{Name: "InsufficientFunds", Args: []interface{}{big.NewInt(1)}}
+	err := ErrSwapRevertedDecoded(d.String(), d)
+	var afiErr *AfiError
+	if !errors.As(err, &afiErr) {
+		t.Fatal("expected *AfiError")
+	}
+	if afiErr.Code != "SWAP_REVERTED" {
+		t.Errorf("Code = %q", afiErr.Code)
+	}
+	if afiErr.Decoded == nil || afiErr.Decoded.Name != "InsufficientFunds" {
+		t.Errorf("Decoded missing: %+v", afiErr.Decoded)
+	}
+}
+
+func TestExtractRevertData_FromHexInMessage(t *testing.T) {
+	// extractRevertData has a fallback that scans the error string for "0x...".
+	err := errors.New("execution reverted: 0x08c379a000000000000000000000000000000000000000000000000000000000000000")
+	data := extractRevertData(err)
+	if len(data) == 0 {
+		t.Error("expected data extracted from error message")
+	}
+}
+
+func TestExtractRevertData_NilAndNoData(t *testing.T) {
+	if extractRevertData(nil) != nil {
+		t.Error("expected nil for nil error")
+	}
+	if extractRevertData(errors.New("network: connection refused")) != nil {
+		t.Error("expected nil when no 0x… in message")
+	}
+}
+
+func TestIsHexDigit(t *testing.T) {
+	for _, c := range []byte{'0', '5', '9', 'a', 'f', 'A', 'F'} {
+		if !isHexDigit(c) {
+			t.Errorf("%q should be hex", c)
+		}
+	}
+	for _, c := range []byte{'g', 'Z', ' ', '!'} {
+		if isHexDigit(c) {
+			t.Errorf("%q should NOT be hex", c)
+		}
+	}
+}
+
 func TestErrSimulationDecoded_Roundtrip(t *testing.T) {
 	d := &DecodedRevert{Name: "InsufficientFunds", Args: []interface{}{big.NewInt(100)}}
 	err := ErrSimulationDecoded(d.String(), d)
