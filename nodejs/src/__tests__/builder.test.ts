@@ -14,6 +14,7 @@ interface FakeClient {
   quoterUrl: string
   getFeeBps: ReturnType<typeof vi.fn>
   executeSwap: ReturnType<typeof vi.fn>
+  _runLogged: <T>(method: string, fn: () => Promise<T>) => Promise<T>
 }
 
 let client: FakeClient
@@ -25,6 +26,7 @@ beforeEach(() => {
     quoterUrl:   "https://api.example.com/quoter",
     getFeeBps:   vi.fn().mockResolvedValue(35),
     executeSwap: vi.fn().mockResolvedValue(fakeResult),
+    _runLogged:  <T>(_m: string, fn: () => Promise<T>) => fn(),
   }
   fetchQuoteSpy = vi.spyOn(quoter, "fetchQuote").mockResolvedValue(fakeQuote)
 })

@@ -1,0 +1,1465 @@
+# AFI SDK
+
+> SDK de nivel productivo para ejecutar swaps de tokens en redes EVM a través del [Protocolo AFI](https://afi.run).
+
+Construye interfaces de swap, bots de trading, herramientas analíticas e
+indexers sin reimplementar descubrimiento de rutas, matemática de slippage,
+flujo de allowance, buffer de gas, decodificación de revert ni parsing de eventos.
+
+| | |
+|---|---|
+| **Lenguajes** | TypeScript (Node.js 18+) · Go 1.21+ |
+| **Redes (cotización)** | Base · BSC · Arbitrum · Ethereum · Unichain |
+| **Redes (ejecución)** | Todas las anteriores (chain ID detectado desde el RPC) |
+| **Traducciones** | [English](./README.md) · [Português (BR)](./README.pt-BR.md) |
+| **Licencia** | MIT |
+
+---
+
+## Por qué este SDK
+
+- **Swap en una llamada** — `client.swap()` encadena cotización → verificación de saldo → approve → simulate → submit → wait.
+- **Flujo por etapas** — cada paso también se expone individualmente para control granular de UI.
+- **Seguro por defecto** — allowances exactos, `minOut` aplicado on-chain, simulación antes del broadcast.
+- **Cotizaciones multi-chain** — cotiza en 5 redes EVM desde un único client.
+- **Ergonomía operativa** — health checks, logs estructurados, serialización JSON, lecturas vía multicall, buffer de gas configurable, confirmaciones, timeouts.
+
+---
+
+## Tabla de contenidos
+
+- [Requisitos](#requisitos)
+- [Instalación](#instalación)
+- [Inicio rápido](#inicio-rápido)
+- [Conceptos centrales](#conceptos-centrales)
+- [Referencia de la API](#referencia-de-la-api)
+  - [Construcción del client](#construcción-del-client)
+  - [Operaciones de lectura](#operaciones-de-lectura)
+  - [Builder de cotización](#builder-de-cotización)
+  - [Operaciones de escritura (requieren signer)](#operaciones-de-escritura-requieren-signer)
+  - [Utilidades de transacción](#utilidades-de-transacción)
+  - [Configuración](#configuración)
+- [Helpers](#helpers)
+- [Logs y diagnóstico](#logs-y-diagnóstico)
+- [Manejo de errores](#manejo-de-errores)
+- [Modelo de seguridad](#modelo-de-seguridad)
+- [Recetas](#recetas)
+- [Redes y constantes](#redes-y-constantes)
+- [Directorio de ejemplos](#directorio-de-ejemplos)
+- [Desarrollo](#desarrollo)
+- [Licencia](#licencia)
+
+---
+
+## Requisitos
+
+| Runtime    | Mínimo   | Recomendado |
+|------------|----------|-------------|
+| Node.js    | 18.x     | 20.x LTS    |
+| TypeScript | 5.0      | última      |
+| Go         | 1.21     | 1.22+       |
+
+También necesitas un endpoint RPC HTTP para cada red en la que vayas a leer o
+ejecutar. Proveedores públicos (Ankr, Alchemy, Infura, drpc, …) funcionan en
+desarrollo; **usa un plan pago (o tu propio nodo) en producción** para evitar
+timeouts del quoter y reverts por rate-limit.
+
+---
+
+## Instalación
+
+### TypeScript / Node.js
+
+```bash
+npm install @afi-run/sdk     # o: pnpm add @afi-run/sdk · yarn add @afi-run/sdk
+```
+
+Hasta que el paquete se publique en npm:
+
+```bash
+git clone https://github.com/afi-run/sdk.git
+npm install ./sdk/nodejs
+```
+
+### Go
+
+```bash
+go get github.com/afi-run/sdk/go
+```
+
+```go
+import afi "github.com/afi-run/sdk/go"
+```
+
+---
+
+## Inicio rápido
+
+### TypeScript — cotización de solo lectura
+
+```typescript
+import { AfiClient, NETWORK, formatUnits } from "@afi-run/sdk"
+
+const client = new AfiClient({
+  rpcUrl: "https://rpc.ankr.com/base/TU_CLAVE",
+})
+
+const quote = await client
+  .quote(
+    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  // USDC
+    "0x4200000000000000000000000000000000000006",  // WETH
+    "1000",
+  )
+  .slippage(0.5)
+  .network(NETWORK.BASE)
+  .get()
+
+console.log(`Estimado:    ~${quote.amountOut} WETH`)
+console.log(`Mínimo:      ${quote.minOut} WETH`)
+console.log(`Hops:        ${quote.hops.length}`)
+console.log(`Creado en:   ${new Date(quote.createdAt).toISOString()}`)
+```
+
+### TypeScript — swap en una llamada
+
+```typescript
+client.connect("0xTU_CLAVE_PRIVADA")
+
+const result = await client
+  .quote(USDC, WETH, "500")
+  .slippage(0.5)
+  .execute({ confirmations: 1 })
+
+console.log(`Tx:         ${client.txUrl(result.txHash)}`)
+console.log(`Recibido:   ${formatUnits(result.amountOut, 18)} WETH`)
+console.log(`Gas usado:  ${result.gasUsed}`)
+```
+
+### Go — cotización de solo lectura
+
+```go
+import (
+    "context"
+    "fmt"
+    "log"
+
+    afi "github.com/afi-run/sdk/go"
+    "github.com/ethereum/go-ethereum/common"
+)
+
+func main() {
+    client, err := afi.NewClient(afi.Config{
+        RPCURL: "https://rpc.ankr.com/base/TU_CLAVE",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    ctx := context.Background()
+    usdc := common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+
+    quote, err := client.GetQuote(ctx,
+        afi.From(usdc, afi.WETH, "1000"),
+        afi.WithSlippage(0.5),
+        afi.OnNetwork(afi.NetworkBase),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Estimado:    ~%s WETH\n", quote.AmountOut)
+    fmt.Printf("Mínimo:      %s WETH\n", quote.MinOut)
+    fmt.Printf("Hops:        %d\n", len(quote.Hops))
+}
+```
+
+### Go — swap en una llamada
+
+```go
+client.Connect("TU_CLAVE_PRIVADA")
+
+result, err := client.Swap(ctx,
+    afi.From(usdc, afi.WETH, "500"),
+    afi.WithSlippage(0.5),
+)
+if err != nil {
+    log.Fatal(err)
+}
+url, _ := client.TxURL(result.TxHash.Hex())
+fmt.Printf("Tx:        %s\n", url)
+fmt.Printf("Recibido:  %s WETH\n", afi.FormatUnits(result.AmountOut, 18))
+```
+
+---
+
+## Conceptos centrales
+
+### Ciclo de vida del swap
+
+Cada swap pasa por cinco etapas. `executeSwap(quote)` corre las etapas 2–5 de
+forma atómica; cada una también se expone individualmente para flujos paso a paso.
+
+```
+1. Cotización     ─ POST /quoter — calcula ruta, slippage, minOut
+2. Saldo          ─ ERC20.balanceOf(owner) ≥ amountIn
+3. Approve        ─ ERC20.approve(AFI, amountInWei)        (se omite si ya hay allowance suficiente)
+4. Simulación     ─ eth_call AFI.swap(...)                 (falla rápido si revertiría)
+5. Envío + espera ─ broadcast y espera de confirmaciones
+```
+
+### Modo lectura vs modo signer
+
+El client tiene dos modos según haya o no clave privada configurada:
+
+- **Lectura** — `quote`, `tokenInfo`, `getBalance`, `getEthBalance`,
+  `getAllowance`, `hasAllowance`, `getFeeBps`, `chainId`, `detectNetwork`,
+  `health`, `txUrl`, `addressUrl`.
+- **Signer** (agrega) — `approve`, `simulate`, `submitSwap`, `executeSwap`,
+  `swap`, `estimateSwapCost`.
+
+Los métodos de lectura siguen disponibles tras `connect()`. Los de escritura
+lanzan `NoSignerError` cuando no hay clave privada.
+
+### Modelo de buffer de gas
+
+Todas las transacciones de escritura (approve + swap) multiplican el resultado
+de `eth_estimateGas` por `(1 + gasBufferPercent / 100)`. El predeterminado es
+**+15 %**. Configura con `gasBufferPercent` en la construcción del client, o
+sobrescribe en runtime con `setGasBufferPercent(n)`. Pasa `0` para desactivar.
+
+El buffer solo afecta el gas enviado a `writeContract` / `SendTransaction`,
+nunca el precio (el `maxFeePerGas` siempre es `baseFee * 2 + tip`).
+
+### Slippage y garantía de `minOut`
+
+Toda `Quote` lleva `minOutWei` — el mínimo que el router AFI acepta on-chain.
+El contrato revierte si la ejecución fuera a entregar menos, así que el usuario
+nunca recibe menos que ese valor. El SDK rechaza cotizaciones con
+`minOutWei = 0`.
+
+Slippage se expresa en porcentaje (`0.5` = 0,5 %) y lo aplica el quoter. Usa el
+helper [`calculateMinOut`](#calculadora-de-slippage) si necesitas derivarlo del
+lado del cliente.
+
+### Builder vs functional options
+
+- **TypeScript** — `client.quote(...)` devuelve un `QuoteBuilder` fluido.
+  Encadena `.slippage()`, `.maxHops()`, `.network()`, etc., y termina con `.get()` o `.execute()`.
+- **Go** — `client.GetQuote(ctx, opts...)` recibe functional options
+  (`afi.From`, `afi.WithSlippage`, `afi.OnNetwork`, …).
+
+Ambos exponen la misma configuración; elige el estilo que ya use tu codebase.
+
+---
+
+## Referencia de la API
+
+### Construcción del client
+
+#### TypeScript
+
+```typescript
+new AfiClient(config: AfiConfig)
+
+interface AfiConfig {
+  rpcUrl:             string             // requerido — RPC de la red de ejecución
+  privateKey?:        Hex                // opcional — habilita modo signer
+  gasBufferPercent?:  number             // predet.: 15 — % sobre estimateGas
+  logger?:            Logger             // opcional — callback de diagnóstico
+}
+```
+
+#### Go
+
+```go
+afi.NewClient(cfg afi.Config) (*afi.Client, error)
+
+type Config struct {
+    RPCURL           string  // requerido
+    PrivateKey       string  // opcional — hex con o sin 0x
+    GasBufferPercent uint    // predet.: 15 — cero usa el default; SetGasBufferPercent(0) desactiva
+    Logger           Logger  // opcional
+}
+```
+
+`Close()` (Go) cierra la conexión RPC subyacente.
+
+---
+
+### Operaciones de lectura
+
+| Método | Retorna | Descripción |
+|---|---|---|
+| `getTokens(network?)` / `GetTokens(ctx, network?)` | `Token[]` | Tokens activos. Cache por red. |
+| `findToken(symbol, network?)` / `FindToken(ctx, symbol, network?)` | `Token \| null` | Búsqueda case-insensitive. Usa el cache. |
+| `clearTokensCache(network?)` / `ClearTokensCache(network?)` | `void` | Invalida el cache (todas las redes o una). |
+| `getFeeBps()` / `GetFeeBps(ctx)` | `number` / `uint16` | Tarifa actual del protocolo en el contrato. |
+| `tokenInfo(token, owner?)` / `TokenInfo(ctx, token, owner)` | `TokenInfo` | symbol/name/decimals (+ balance/allowance) en **un multicall**. |
+| `tokenInfoBatch(tokens, owner?)` / `TokenInfoBatch(ctx, tokens, owner)` | `TokenInfo[]` | Lo mismo para N tokens en un único multicall. |
+| `getBalance(token, owner?)` / `GetBalance(ctx, token, owner?)` | `bigint` / `*big.Int` | Saldo ERC-20. |
+| `getEthBalance(owner?)` / `GetETHBalance(ctx, owner?)` | `bigint` / `*big.Int` | Saldo de ETH nativo. |
+| `getAllowance(token, owner?)` / `GetAllowance(ctx, token, owner?)` | `bigint` / `*big.Int` | Cuánto puede gastar el router AFI por `owner`. |
+| `hasAllowance(token, amount, owner?)` / `HasAllowance(ctx, token, amount, owner?)` | `boolean` | Conveniencia: `getAllowance >= amount`. |
+| `chainId()` / `ChainID(ctx)` | `number` / `*big.Int` | Chain ID leído del RPC (cacheado). |
+| `detectNetwork()` / `DetectNetwork(ctx)` | `Network \| null` | Mapea el chain ID a una `Network` conocida. |
+| `health()` / `Health(ctx)` | `HealthCheck` | Probe paralelo de RPC + API. |
+| `estimateSwapCost(quote)` / `EstimateSwapCost(ctx, quote)` | `SwapCostEstimate` | Proyecta el costo sin enviar tx. **Requiere signer.** |
+
+`owner` omitido usa la wallet conectada. En Go pasa `common.Address{}` para el
+mismo efecto. `TokenInfo` en TS acepta `"self"` como atajo.
+
+#### Token
+
+```typescript
+interface Token {
+  address:  Address     // 0x… 20 bytes
+  symbol:   string      // p.ej. "USDC"
+  decimals: number      // p.ej. 6
+  active:   boolean     // false ⇒ deprecated/pausado
+}
+```
+
+#### TokenInfo
+
+```typescript
+interface TokenInfo {
+  address:    Address
+  symbol:     string
+  name:       string
+  decimals:   number
+  owner?:     Address    // solo cuando se pasó owner
+  balance?:   bigint     // saldo ERC-20 del owner
+  allowance?: bigint     // allowance concedida al AFI por el owner
+}
+```
+
+#### HealthCheck
+
+```typescript
+interface HealthEndpoint {
+  ok:          boolean
+  durationMs:  number
+  detail?:     string    // "chainId=8453" en el RPC, "ok" o "HTTP 503" en la API
+  error?:      unknown
+}
+
+interface HealthCheck {
+  rpc: HealthEndpoint
+  api: HealthEndpoint
+}
+```
+
+#### SwapCostEstimate
+
+```typescript
+interface SwapCostEstimate {
+  gas:           bigint   // eth_estimateGas crudo
+  gasWithBuffer: bigint   // gas * (1 + gasBufferPercent/100)
+  gasPriceWei:   bigint   // maxFeePerGas que el SDK usaría = baseFee * 2 + tip
+  totalWei:      bigint   // gasWithBuffer * gasPriceWei
+  totalEth:      string   // totalWei formateado en ETH (18 decimales)
+}
+```
+
+---
+
+### Builder de cotización
+
+#### TypeScript
+
+```typescript
+client.quote(tokenIn: Address | Token, tokenOut: Address | Token, amountIn: string): QuoteBuilder
+```
+
+| Método            | Predet.     | Descripción |
+|-------------------|-------------|-------------|
+| `.slippage(v)`    | `0.5`       | Tolerancia de slippage en % |
+| `.maxHops(n)`     | `2`         | Máximo de hops |
+| `.network(n)`     | `BASE`      | Red objetivo |
+| `.priceBase(s)`   | —           | Llena `tokenInBasePrice` / `tokenOutBasePrice` |
+| `.dexs(...)`      | —           | Restringe DEXes |
+| `.blockNumber(n)` | `"latest"`  | Cotizar contra un bloque específico |
+| `.rpcUrls(...)`   | RPC client  | Sobrescribe los endpoints que usa el quoter |
+| `.get()`          | —           | Trae y devuelve un `Quote` |
+| `.execute(opts?)` | —           | Trae + ejecuta. Requiere signer. |
+
+#### Go
+
+```go
+client.GetQuote(ctx context.Context, opts ...QuoteOption) (*Quote, error)
+client.Swap(ctx context.Context, opts ...QuoteOption) (*SwapResult, error)
+```
+
+| Option                   | Predet.      | Descripción |
+|--------------------------|--------------|-------------|
+| `From(in, out, amount)`  | **requerido**| Par + monto de entrada |
+| `WithSlippage(v)`        | `0.5`        | Slippage en % |
+| `WithMaxHops(n)`         | `2`          | Máximo de hops |
+| `OnNetwork(n)`           | `NetworkBase`| Red objetivo |
+| `WithPriceBase(s)`       | —            | Igual `.priceBase` |
+| `WithDexs(...)`          | —            | Restringe DEXes |
+| `WithBlockNumber(n)`     | `"latest"`   | Bloque específico |
+| `WithRpcUrls(...)`       | RPC client   | Sobrescribe endpoints del quoter |
+
+#### Quote
+
+```typescript
+interface Quote {
+  tokenIn:           Address    // token de entrada
+  tokenOut:          Address    // token de salida
+  amountIn:          string     // monto de entrada legible
+  amountOut:         string     // salida estimada legible
+  minOut:            string     // salida mínima tras slippage (legible)
+  amountInWei:       bigint     // entrada exacta — pasarlo a approve()
+  amountOutWei:      bigint     // salida estimada (Wei)
+  minOutWei:         bigint     // mínimo aplicado on-chain (Wei)
+  steps:             Hex        // ruta codificada — pasada a AFI.swap()
+  path:              Address[]  // direcciones de tokens en la ruta
+  hops:              Hop[]      // detalle por hop
+  slippage:          number     // slippage aplicado en %
+  feeBps:            number     // tarifa del protocolo en la cotización
+  tokenInPrice:      string     // precio de tokenIn en unidades de tokenOut
+  tokenOutPrice:     string     // precio de tokenOut en unidades de tokenIn
+  tokenInBasePrice?: string     // llenado por priceBase()
+  tokenOutBasePrice?: string    // llenado por priceBase()
+  createdAt:         number     // timestamp unix-ms — usado por isQuoteStale()
+}
+
+interface Hop {
+  tokenIn:       Address
+  tokenOut:      Address
+  amountIn:      string
+  amountOut:     string
+  minOut:        string
+  amountInWei:   bigint
+  amountOutWei:  bigint
+  minOutWei:     bigint
+  tokenInPrice:  string
+  tokenOutPrice: string
+  slippage:      number
+  type:          string    // protocolo de pool, p.ej. "v3", "v2"
+  kind:          string    // motor de routing
+  routeId:       number
+  weight:        number
+}
+```
+
+---
+
+### Operaciones de escritura (requieren signer)
+
+#### `connect(privateKey)` / `Connect(privateKey)`
+
+Adjunta un signer. Acepta hex con o sin prefijo `0x`.
+
+```typescript
+client.connect("0x…")
+const c = new AfiClient({ rpcUrl, privateKey: "0x…" })
+```
+
+```go
+err := client.Connect("…")
+```
+
+`client.address()` (TS) / `client.Address()` (Go) devuelve la dirección
+derivada de la clave, o la dirección cero cuando no hay signer.
+
+#### `approve(token, amountWei)` / `Approve(ctx, token, amountWei)`
+
+Envía un approve por el monto exacto para el router AFI. Devuelve un
+`PendingTx` (hash disponible al instante) o **null** cuando el allowance
+existente ya es suficiente — ahorrando una transacción.
+
+Para tokens estilo USDT el SDK resetea el allowance a cero primero. Si el reset
+en sí falla (y el approve siguiente también), ambos errores se muestran en la
+`ApprovalError` resultante.
+
+```typescript
+const pending = await client.approve(quote.tokenIn, quote.amountInWei)
+if (pending) {
+  console.log("Tx de aprobación:", pending.txHash)
+  await pending.wait()
+}
+```
+
+```go
+pending, err := client.Approve(ctx, quote.TokenIn, quote.AmountInWei)
+if pending != nil {
+    receipt, err := pending.Wait(ctx)
+}
+```
+
+#### `simulate(quote)` / `Simulate(ctx, quote)`
+
+Hace `eth_call` contra el router AFI. Resuelve (o devuelve `nil`) en éxito.
+Lanza `SimulationFailedError` (TS) o devuelve `*AfiError{Code:"SIMULATION_FAILED"}`
+(Go) con el motivo del revert si el swap revertiría. **Ninguna tx se envía en
+cualquier caso.**
+
+```typescript
+try {
+  await client.simulate(quote)
+} catch (e) {
+  if (isSimulationFailedError(e)) console.error("revertiría:", e.reason)
+}
+```
+
+```go
+if err := client.Simulate(ctx, quote); err != nil {
+    log.Println("revertiría:", err)
+}
+```
+
+#### `submitSwap(quote)` / `SubmitSwap(ctx, quote)`
+
+Envía la tx de swap sin esperar confirmación. Devuelve un `PendingSwap` cuyo
+`wait(opts?)` bloquea hasta confirmar.
+
+#### `executeSwap(quote, opts?)` / `ExecuteSwap(ctx, quote, opts?)`
+
+Corre la secuencia completa — saldo → approve → simulate → submit → wait.
+Devuelve cuando el swap está confirmado.
+
+```typescript
+interface ExecuteOptions {
+  confirmations?: number    // predet.: 1
+  timeoutMs?:     number    // predet.: sin timeout
+}
+```
+
+```go
+type ExecuteOptions struct {
+    Confirmations uint64
+    TimeoutMs     int64
+}
+```
+
+#### `swap(opts)` / `Swap(ctx, opts...)`
+
+Conveniencia: cotiza y ejecuta. Usa el flujo por etapas o
+`executeSwap(quote, opts)` cuando necesites confirmations/timeout o
+confirmación manual entre cotización y ejecución.
+
+#### `estimateSwapCost(quote)` / `EstimateSwapCost(ctx, quote)`
+
+Proyecta el costo de gas sin enviar tx. Devuelve
+[`SwapCostEstimate`](#swapcostestimate). Útil para mostrar "tarifa de red
+estimada" antes de que el usuario firme.
+
+#### Tipos de resultado
+
+```typescript
+interface PendingTx {
+  txHash: Hex
+  wait(opts?: WaitForTxOptions): Promise<TxReceipt>
+}
+
+interface PendingSwap {
+  txHash: Hex
+  wait(opts?: WaitForTxOptions): Promise<SwapResult>
+}
+
+interface SwapResult {
+  txHash:      Hex
+  blockNumber: bigint
+  amountIn:    bigint     // amountIn real del evento SwapExecuted
+  amountOut:   bigint     // amountOut real del evento SwapExecuted
+  tokenIn:     Address
+  tokenOut:    Address
+  gasUsed:     bigint
+}
+
+interface TxReceipt {
+  blockNumber: bigint
+  gasUsed:     bigint
+}
+
+interface WaitForTxOptions {
+  confirmations?: number   // predet.: 1
+  timeoutMs?:     number   // predet.: sin timeout
+}
+```
+
+---
+
+### Utilidades de transacción
+
+#### `waitForTx(hash, opts?)` / `WaitForTx(ctx, hash, opts?)`
+
+Hace polling hasta que la tx alcance las confirmaciones deseadas. Útil para
+hashes obtenidos fuera del SDK (persistidos en DB, viniendo de otro servicio,
+en cola).
+
+```typescript
+const receipt = await client.waitForTx("0x…", { confirmations: 2, timeoutMs: 30_000 })
+```
+
+```go
+receipt, err := client.WaitForTx(ctx, "0x…", afi.WaitForTxOptions{
+    Confirmations: 2, TimeoutMs: 30_000, PollIntervalMs: 1_000,
+})
+```
+
+#### `parseSwapResult(receipt)` / `ParseSwapResult(receipt)`
+
+Decodifica el evento `SwapExecuted` desde cualquier receipt. Devuelve `null` /
+`nil` cuando no hay log `SwapExecuted` (la tx no era un swap AFI).
+
+```typescript
+import { parseSwapResult } from "@afi-run/sdk"
+
+const result = parseSwapResult(receipt) // SwapResult | null
+```
+
+```go
+result, err := afi.ParseSwapResult(receipt) // nil cuando no hay SwapExecuted en el receipt
+```
+
+Úsalo en indexers, herramientas de replay, jobs en cola que guardan el hash
+para reconciliar después, y tests end-to-end.
+
+---
+
+### Configuración
+
+| Método | Descripción |
+|---|---|
+| `setApiUrl(url)` / `SetApiURL(url)` | Sobrescribe la URL base de la API AFI (predet. `https://rpc.afi.run`). |
+| `setGasBufferPercent(n)` / `SetGasBufferPercent(n)` | Sobrescribe el buffer en runtime. `0` desactiva. |
+| `setLogger(fn)` / `SetLogger(fn)` | Adjunta o reemplaza el logger de diagnóstico. |
+| `clearTokensCache(network?)` / `ClearTokensCache(network?)` | Fuerza refetch en el próximo `getTokens()`. |
+
+---
+
+## Helpers
+
+### Utilidades de dirección
+
+```typescript
+import {
+  isAddress,
+  checksumAddress,    // EIP-55
+  isZeroAddress,
+  equalAddresses,     // case-insensitive
+  ZERO_ADDRESS,
+} from "@afi-run/sdk"
+```
+
+```go
+afi.IsAddress(s)          // exige prefijo "0x" (mismo comportamiento que viem/ethers)
+afi.Checksum(s)           // string EIP-55
+afi.IsZeroAddress(s)
+afi.EqualAddresses(a, b)
+afi.ZeroAddress           // common.Address{}
+afi.ZeroAddressHex        // "0x00…00"
+```
+
+### Calculadora de slippage
+
+```typescript
+import { calculateMinOut, applySlippage } from "@afi-run/sdk"
+
+const minOut = calculateMinOut(quote.amountOutWei, 0.5)  // 0.5% menos, redondeo hacia abajo
+```
+
+```go
+minOut := afi.CalculateMinOut(quote.AmountOutWei, 0.5)
+```
+
+`slippagePct` está en porcentaje (`0.5` = 0,5 %). Negativos se acotan a 0.
+Valores ≥ 100 devuelven 0.
+
+### Conversión de unidades
+
+```typescript
+import { parseUnits, formatUnits } from "@afi-run/sdk"
+
+parseUnits("1000", 6)              // 1_000_000_000n
+formatUnits(1_000_000_000n, 6)     // "1000"
+```
+
+```go
+wei, _ := afi.ParseUnits("1000", 6) // *big.Int
+str   := afi.FormatUnits(wei, 6)    // "1000"
+```
+
+### URLs de explorer
+
+```typescript
+client.txUrl(result.txHash)             // https://basescan.org/tx/…
+client.addressUrl(addr, NETWORK.BSC)    // https://bscscan.com/address/…
+
+// Standalone:
+import { txUrl, addressUrl, NETWORK_EXPLORERS } from "@afi-run/sdk"
+txUrl(hash, NETWORK.BASE, "https://mi-explorer")   // base personalizado
+```
+
+```go
+url, _ := client.TxURL(result.TxHash.Hex())
+addr, _ := afi.AddressURL(walletAddr, afi.NetworkArbitrum)
+```
+
+Por defecto vienen en `NETWORK_EXPLORERS` / `afi.NetworkExplorers`,
+sobrescribibles en runtime.
+
+### Frescura de cotización
+
+```typescript
+import { isQuoteStale } from "@afi-run/sdk"
+
+if (isQuoteStale(quote, 30)) {   // más vieja que 30 segundos
+  quote = await client.quote(...).get()
+}
+```
+
+```go
+if quote.IsStale(30) {
+    quote, _ = client.GetQuote(ctx, ...)
+}
+```
+
+Las cotizaciones envejecen rápido (pocos segundos en pares volátiles). Siempre
+recotiza antes del broadcast en flujos lentos (wallet hardware, multi-sig,
+revisión manual).
+
+### Decodificación de custom errors (`decodeRevertReason`, campos `decoded` en los errores)
+
+El SDK trae los **9 custom errors del router AFI** pre-registrados (verificados
+en Basescan), más los de OpenZeppelin (`Ownable*`, `ReentrancyGuardReentrantCall`)
+y los built-in de Solidity (`Error(string)`, `Panic(uint256)`). Los reverts se
+decodifican automáticamente; el resultado estructurado queda adjunto al error lanzado.
+
+```typescript
+try {
+  await client.simulate(quote)
+} catch (e) {
+  if (isSimulationFailedError(e) && e.decoded) {
+    // e.decoded = { name: "InsufficientFunds", signature: "InsufficientFunds(uint256)", args: [100n] }
+    if (e.decoded.name === "InsufficientFunds") {
+      toast.error(`El pool solo tiene ${e.decoded.args[0]} disponible`)
+    }
+  }
+}
+```
+
+```go
+err := client.Simulate(ctx, quote)
+var afiErr *afi.AfiError
+if errors.As(err, &afiErr) && afiErr.Decoded != nil {
+    if afiErr.Decoded.Name == "InsufficientFunds" {
+        log.Printf("el pool solo tiene %s disponible", afiErr.Decoded.Args[0])
+    }
+}
+```
+
+#### Errores decodificados que vienen en el SDK
+
+| Error                                 | Origen        |
+|---------------------------------------|---------------|
+| `DifferentAssets(address,address)`    | router AFI    |
+| `FeeTooHigh(uint16)`                  | router AFI    |
+| `InsufficientFunds(uint256)`          | router AFI    |
+| `InvalidRouteID(uint16)`              | router AFI    |
+| `NotOperator()`                       | router AFI    |
+| `OwnableInvalidOwner(address)`        | OpenZeppelin  |
+| `OwnableUnauthorizedAccount(address)` | OpenZeppelin  |
+| `ReentrancyGuardReentrantCall()`      | OpenZeppelin  |
+| `ZeroAddress()`                       | router AFI    |
+| `Error(string)`                       | Solidity      |
+| `Panic(uint256)`                      | Solidity      |
+
+#### Registrar los errores de tu propio contrato
+
+```typescript
+import { registerCustomErrors, decodeRevertReason } from "@afi-run/sdk"
+
+registerCustomErrors([
+  { type: "error", name: "MyContractError", inputs: [
+    { name: "code", type: "uint256" },
+    { name: "msg",  type: "string" },
+  ]},
+])
+
+// Decodificar revert data crudo manualmente
+const decoded = decodeRevertReason("0x…")
+// o simplemente confiar en que vendrá adjunto a los próximos errores lanzados
+```
+
+```go
+// Parse cualquier ABI con definiciones de error y regístrala globalmente.
+a, _ := abi.JSON(strings.NewReader(`[{"type":"error","name":"MyContractError", ...}]`))
+afi.RegisterCustomErrors(a)
+
+decoded := afi.DecodeRevertReason(rawHexBytes) // *afi.DecodedRevert
+```
+
+---
+
+### Tarifa de la transacción en los resultados
+
+`SwapResult` y `TxReceipt` ahora exponen el costo real pagado:
+
+```typescript
+const result = await client.executeSwap(quote)
+console.log(`Costo: ${result.feeEth} ETH (${result.feeWei} wei @ ${result.effectiveGasPrice} wei/gas)`)
+```
+
+Los mismos campos en Go:
+
+```go
+fmt.Printf("Costo: %s ETH\n", result.FeeETH)
+```
+
+Los receipts devueltos por `waitForTx`, `pending.wait()`, y `wait()` de
+`approve`/`revoke` cargan la tarifa.
+
+---
+
+### `getTxStatus(hash)` — estado sin bloquear
+
+Devuelve al instante el estado actual de una tx — útil para indicadores de UI
+con polling donde bloquear en un receipt sería desastroso.
+
+```typescript
+const status = await client.getTxStatus(hash)
+// "pending" | "success" | "failed" | "unknown"
+```
+
+```go
+status, err := client.GetTxStatus(ctx, hash)
+switch status {
+case afi.TxStatusPending: // …
+case afi.TxStatusSuccess: // …
+}
+```
+
+---
+
+### `getTokenPrice(in, out, opts?)` — consulta rápida de precio
+
+Lookup liviano de tasa de cambio para un par sin comprometerse al swap.
+
+```typescript
+const { price, inverse } = await client.getTokenPrice(USDC, WETH)
+// price   = "0.00031" (1 USDC en WETH)
+// inverse = "3225"    (1 WETH en USDC)
+
+// Sobrescribir defaults:
+await client.getTokenPrice(USDC, WETH, { amount: "1000", slippage: 1.0, network: NETWORK.BSC })
+```
+
+```go
+p, _ := client.GetTokenPrice(ctx, usdc, weth)
+// p.Price, p.Inverse
+```
+
+---
+
+### Gestión de nonce — `getNonce`, `useManagedNonce`
+
+Para bots que envían varios swaps en paralelo sin esperar entre ellos.
+
+```typescript
+// Lectura única
+const n = await client.getNonce()
+
+// Modo gestionado (recomendado para bots)
+await client.useManagedNonce()    // sincroniza desde la chain y mantiene un contador local
+await Promise.all([
+  client.executeSwap(quote1),
+  client.executeSwap(quote2),
+  client.executeSwap(quote3),     // cada uno toma un nonce único, sin race
+])
+
+// En caso de error / fork / replacement
+await client.resetManagedNonce()  // re-sincroniza con la chain
+
+// Override por llamada
+await client.executeSwap(quote, { nonce: 142 })
+```
+
+```go
+n, _ := client.GetNonce(ctx)
+client.UseManagedNonce(ctx)
+nonce := uint64(142)
+client.ExecuteSwap(ctx, quote, afi.ExecuteOptions{Nonce: &nonce})
+client.ResetManagedNonce(ctx)
+client.DisableManagedNonce()
+```
+
+Cuando el contador local se desincroniza (tx rechazada, replacement), llama
+`resetManagedNonce()` / `ResetManagedNonce(ctx)` para re-sincronizar.
+
+---
+
+### `preflight(quote)` — verificación combinada de listo-para-ejecutar
+
+Corre balance + allowance + simulate **sin enviar tx** y devuelve un reporte
+estructurado para que tu UI muestre "listo para hacer swap".
+
+```typescript
+const report = await client.preflight(quote)
+if (!report.canExecute) {
+  for (const p of report.problems) console.error(`${p.code}: ${p.message}`)
+} else if (report.needsApproval) {
+  showButton("Aprobar y Hacer Swap")
+} else {
+  showButton("Hacer Swap")
+}
+```
+
+```go
+report, _ := client.Preflight(ctx, quote)
+if !report.CanExecute {
+    for _, p := range report.Problems {
+        fmt.Printf("%s: %s\n", p.Code, p.Message)
+    }
+}
+```
+
+`canExecute = problems.length === 0` — `needsApproval` es informativo porque
+`executeSwap` se encarga del approve automáticamente.
+
+---
+
+### Transacciones pre-codificadas (`encodeSwap`, `encodeApprove`, `encodeRevoke`)
+
+Para frontends donde la clave privada vive en una wallet del usuario (Wagmi,
+RainbowKit, MetaMask, Frame, hardware wallet, Safe SDK), construye el calldata
+con el SDK y envíalo a través del connector.
+
+```typescript
+import { encodeSwap, encodeApprove } from "@afi-run/sdk"
+
+const approveTx = encodeApprove(quote.tokenIn, quote.amountInWei)
+await walletClient.sendTransaction(approveTx)
+
+const swapTx = encodeSwap(quote)
+const hash = await walletClient.sendTransaction(swapTx)
+```
+
+```go
+swapTx, _ := afi.EncodeSwap(quote)         // {To, Data, Value}
+approveTx, _ := afi.EncodeApprove(usdc, amt)
+revokeTx, _ := afi.EncodeRevoke(usdc)
+```
+
+Los tres también están expuestos como métodos del client (`client.encodeSwap(quote)`,
+etc.) cuando ya tienes un client configurado.
+
+---
+
+### Revocar allowance — `revoke(token)` / `Revoke(ctx, token)`
+
+Envía `approve(AFI, 0)` poniendo la allowance del router en cero. Devuelve
+`null` / `nil` cuando la allowance ya es cero. Úsalo como limpieza de
+seguridad post-swap.
+
+```typescript
+const tx = await client.revoke(quote.tokenIn)
+await tx?.wait()
+```
+
+```go
+pending, err := client.Revoke(ctx, quote.TokenIn)
+if pending != nil {
+    pending.Wait(ctx)
+}
+```
+
+---
+
+### Multicall genérico — `multicall(calls)` / `Multicall(ctx, calls)`
+
+Empaqueta N lecturas arbitrarias en una sola llamada RPC vía Multicall3. Útil
+para cualquier batch más allá de `tokenInfo` — precios de pools, tus propios
+contratos, estado custom de DEX.
+
+```typescript
+import { ERC20_ABI } from "@afi-run/sdk"
+
+const results = await client.multicall([
+  { address: usdc, abi: ERC20_ABI, functionName: "totalSupply" },
+  { address: weth, abi: ERC20_ABI, functionName: "totalSupply" },
+])
+for (const r of results) {
+  if (r.status === "success") console.log(r.result)
+}
+```
+
+```go
+// El ABI de Multicall3 está en afi.Multicall3ABIJSON para uso de bajo nivel.
+calls := []afi.Multicall3Call{ /* … */ }
+results, err := client.Multicall(ctx, calls)
+```
+
+---
+
+### Refrescar una cotización obsoleta — `refreshQuote(quote)` / `RefreshQuote(ctx, quote)`
+
+Reobtiene la cotización con los parámetros originales (network, slippage,
+maxHops, priceBase, dexs). Conveniencia para flujos lentos (confirmación en
+hardware wallet, revisión multi-sig) donde el builder original ya no está.
+
+```typescript
+if (isQuoteStale(quote, 30)) {
+  quote = await client.refreshQuote(quote)
+}
+```
+
+```go
+if quote.IsStale(30) {
+    quote, _ = client.RefreshQuote(ctx, quote)
+}
+```
+
+---
+
+### Cache de metadata de tokens
+
+`tokenInfo` / `tokenInfoBatch` mantienen `(symbol, name, decimals)` en un
+cache en memoria — esos valores no cambian para un token ERC-20, así que el
+segundo lookup de metadata cuesta **cero RPC**. Cuando hay `owner`, solo
+balance/allowance se refrescan en llamadas posteriores.
+
+Limpia el cache con `clearTokenMetadataCache()` (TS) /
+`ClearTokenMetadataCache()` (Go) si cambias de proveedor RPC y quieres
+re-verificar los tokens.
+
+---
+
+### Serialización JSON
+
+`Quote`, `SwapResult` y `TokenInfo` traen campos `bigint` / `*big.Int` que
+rompen `JSON.stringify` y pierden precisión en `json.Marshal`. El SDK provee
+helpers de ida y vuelta (bigints como strings base-10).
+
+```typescript
+import {
+  bigintReplacer,
+  quoteToJSON,    quoteFromJSON,
+  swapResultToJSON, swapResultFromJSON,
+  tokenInfoToJSON,  tokenInfoFromJSON,
+} from "@afi-run/sdk"
+
+// Guardar
+await db.put(`quote:${id}`, JSON.stringify(quoteToJSON(quote)))
+// Alternativa genérica para objetos arbitrarios:
+JSON.stringify(cualquierObjeto, bigintReplacer)
+
+// Restaurar
+const restored = quoteFromJSON(await db.get(`quote:${id}`))
+```
+
+```go
+// Quote / SwapResult / TokenInfo implementan MarshalJSON y UnmarshalJSON.
+data, _ := json.Marshal(quote)        // bigints como strings
+var q afi.Quote
+_ = json.Unmarshal(data, &q)
+```
+
+### ABIs exportadas
+
+```typescript
+import { AFI_ABI, ERC20_ABI, MULTICALL3_ABI } from "@afi-run/sdk"
+// drop-in para viem.readContract / writeContract / parseEventLogs
+```
+
+```go
+// Strings JSON crudas — pasa a abi.JSON(strings.NewReader(...)).
+afi.AFIABIJSON
+afi.ERC20ABIJSON
+afi.Multicall3ABIJSON
+```
+
+---
+
+## Logs y diagnóstico
+
+Adjunta un logger para capturar tiempo y resultado de las operaciones
+principales.
+
+```typescript
+new AfiClient({
+  rpcUrl,
+  logger: (e) => console.log(`${e.method} ${e.durationMs}ms ok=${e.ok}`),
+})
+
+interface LogEvent {
+  kind:        "rpc" | "api"
+  method:      string        // "getQuote", "approve", "simulate", "submitSwap", "executeSwap"
+  durationMs:  number
+  ok:          boolean
+  error?:      unknown
+}
+```
+
+```go
+afi.NewClient(afi.Config{
+    RPCURL: url,
+    Logger: func(e afi.LogEvent) {
+        log.Printf("%s %dms ok=%v", e.Method, e.DurationMs, e.OK)
+    },
+})
+```
+
+Cambia en runtime con `setLogger(fn)` / `SetLogger(fn)`. Pasa `undefined` /
+`nil` para desactivar.
+
+`health()` / `Health(ctx)` sondea RPC (chain ID) y API AFI en paralelo:
+
+```typescript
+const h = await client.health()
+if (!h.rpc.ok || !h.api.ok) {
+  console.error("no listo:", h)
+  process.exit(1)
+}
+```
+
+---
+
+## Manejo de errores
+
+Todos los errores lanzados derivan de `AfiError` (TS) / `*AfiError` (Go). El
+`Code` identifica la clase; el `Message` es amigable; algunos códigos adjuntan
+campos extra.
+
+### Referencia de códigos de error
+
+| Código | Cuándo | Campos extra |
+|---|---|---|
+| `NO_SIGNER` | Método de escritura llamado sin `connect()`. | — |
+| `INSUFFICIENT_BALANCE` | Saldo de tokenIn por debajo del requerido. | `token`, `owner`, `symbol`, `decimals`, `balance`, `required` |
+| `APPROVAL_FAILED` | `approve()` (o el reset estilo USDT) revirtió. | — |
+| `SIMULATION_FAILED` | `eth_call` de `AFI.swap(...)` revirtió antes de enviar tx. | `reason`, `revertData?` (TS) |
+| `QUOTE_FAILED` | La API del quoter devolvió error (sin ruta, validación, …). | — |
+| `SWAP_REVERTED` | La tx de swap revirtió on-chain, o `estimateGas` falló. | `reason` (TS) |
+
+Cuando ocurre `INSUFFICIENT_BALANCE`, el SDK hace **un multicall extra** para
+adjuntar `symbol` y `decimals` — el mensaje sale como
+*"Insufficient USDC for 0xABcd…: have 0.5, need 1"* en vez de direcciones crudas.
+
+### TypeScript — type guards
+
+Prefiere los guards a `instanceof` — sobreviven a class shims y a la
+transpilación de `esbuild`, `swc`, interop ESM↔CJS, etc.
+
+```typescript
+import {
+  isAfiError,
+  isInsufficientBalanceError,
+  isQuoteError,
+  isSimulationFailedError,
+  isApprovalError,
+  isSwapRevertedError,
+  isNoSignerError,
+} from "@afi-run/sdk"
+
+try {
+  await client.executeSwap(quote)
+} catch (e) {
+  if (isInsufficientBalanceError(e)) {
+    showFundingPrompt(e.symbol ?? e.token, e.required - e.balance)
+  } else if (isSimulationFailedError(e)) {
+    toast.error(`Revertiría: ${e.reason}`)
+  } else if (isQuoteError(e)) {
+    toast.error("Sin ruta disponible.")
+  } else {
+    Sentry.captureException(e)
+    throw e
+  }
+}
+```
+
+### Go
+
+```go
+result, err := client.ExecuteSwap(ctx, quote)
+if err != nil {
+    var afiErr *afi.AfiError
+    if errors.As(err, &afiErr) {
+        switch afiErr.Code {
+        case "NO_SIGNER":
+            log.Println("conecta un signer primero")
+        case "INSUFFICIENT_BALANCE":
+            log.Printf("faltan %s %s", new(big.Int).Sub(afiErr.Required, afiErr.Balance), afiErr.Symbol)
+        case "SIMULATION_FAILED":
+            log.Println("revertiría:", afiErr.Message)
+        case "QUOTE_FAILED":
+            log.Println("sin ruta")
+        case "APPROVAL_FAILED":
+            log.Println("approve revirtió")
+        case "SWAP_REVERTED":
+            log.Println("revert on-chain")
+        }
+        return
+    }
+    log.Fatal(err) // error de red / encoding / programación
+}
+```
+
+---
+
+## Modelo de seguridad
+
+| Riesgo                            | Mitigación |
+|-----------------------------------|------------|
+| Bypass de slippage                | `minOutWei` siempre viene del quoter; los valores cero se rechazan en el cliente. |
+| Aprobación excesiva               | Aprueba siempre el `amountInWei` exacto — nunca `MAX_UINT256`. |
+| Falla estilo USDT                 | El SDK resetea a 0 antes de re-aprobar; los errores del reset se preservan y se muestran si el approve siguiente también falla. |
+| Tx que revertiría                 | `simulate` corre antes de cada `executeSwap` — las fallas lanzan sin gastar gas. |
+| Race en allowance                 | Se vuelve a leer la allowance on-chain tras cada approve. |
+| Subestimación de gas              | `eth_estimateGas` × `(1 + gasBufferPercent/100)` (predet. +15 %). |
+| Mismatch de red                   | El signer lee el chain ID del RPC (Go); el SDK expone `chainId()` para verificarlo (TS). |
+| Cotizaciones obsoletas            | `Quote.createdAt` se setea en la captura. Usa `isQuoteStale(quote, maxAge)` antes de enviar. |
+| ETH nativo pasado por error       | El router no acepta ETH nativo; usa WETH. |
+
+La dirección del router y la tarifa del protocolo se leen on-chain en cada
+cotización — el SDK no confía en valores cacheados aquí.
+
+---
+
+## Recetas
+
+### Guardar una cotización y restaurarla después
+
+```typescript
+import { quoteToJSON, quoteFromJSON, isQuoteStale } from "@afi-run/sdk"
+
+await redis.set(`quote:${userId}`, JSON.stringify(quoteToJSON(quote)))
+// …
+const raw = await redis.get(`quote:${userId}`)
+const quote = quoteFromJSON(raw!)
+if (isQuoteStale(quote, 60)) {
+  // recotizar
+}
+```
+
+### Saltar approve cuando ya hay allowance suficiente
+
+```typescript
+if (await client.hasAllowance(quote.tokenIn, quote.amountInWei)) {
+  // sin approve
+} else {
+  const tx = await client.approve(quote.tokenIn, quote.amountInWei)
+  await tx?.wait()
+}
+```
+
+```go
+ok, _ := client.HasAllowance(ctx, quote.TokenIn, quote.AmountInWei)
+if !ok {
+    pending, _ := client.Approve(ctx, quote.TokenIn, quote.AmountInWei)
+    if pending != nil {
+        _, _ = pending.Wait(ctx)
+    }
+}
+```
+
+### Mostrar tarifa estimada antes de firmar
+
+```typescript
+const cost = await client.estimateSwapCost(quote)
+toast.info(`Tarifa de red estimada: ~${cost.totalEth} ETH`)
+```
+
+### Dashboard de portafolio — info en lote para N tokens
+
+```typescript
+const tokens = await client.getTokens()
+const infos = await client.tokenInfoBatch(
+  tokens.filter(t => t.active).map(t => t.address),
+  "self",
+)
+infos.forEach(i => console.log(`${i.symbol}: ${formatUnits(i.balance ?? 0n, i.decimals)}`))
+```
+
+### Fail-fast en el arranque
+
+```typescript
+const h = await client.health()
+if (!h.rpc.ok || !h.api.ok) {
+  console.error("SDK AFI no listo", h)
+  process.exit(1)
+}
+const net = await client.detectNetwork()
+if (net !== "base") {
+  console.error(`Esperaba RPC para base, llegó ${net}`)
+  process.exit(1)
+}
+```
+
+### Bot que espera 2 confirmaciones
+
+```typescript
+const result = await client
+  .quote(USDC, WETH, "500")
+  .slippage(1.0)
+  .execute({ confirmations: 2, timeoutMs: 60_000 })
+```
+
+```go
+result, err := client.ExecuteSwap(ctx, quote, afi.ExecuteOptions{
+    Confirmations: 2, TimeoutMs: 60_000,
+})
+```
+
+### Reprocesar o indexar una tx conocida
+
+```typescript
+import { parseSwapResult } from "@afi-run/sdk"
+const receipt = await publicClient.getTransactionReceipt({ hash })
+const result = parseSwapResult(receipt)
+if (result) await indexSwap(result)
+```
+
+---
+
+## Redes y constantes
+
+### Redes soportadas
+
+| Red         | Chain ID | Explorer predet.             | Constante TS           | Constante Go           |
+|-------------|----------|------------------------------|------------------------|------------------------|
+| Base        | 8453     | https://basescan.org         | `NETWORK.BASE`         | `afi.NetworkBase`      |
+| BSC         | 56       | https://bscscan.com          | `NETWORK.BSC`          | `afi.NetworkBSC`       |
+| Arbitrum    | 42161    | https://arbiscan.io          | `NETWORK.ARBITRUM`     | `afi.NetworkArbitrum`  |
+| Ethereum    | 1        | https://etherscan.io         | `NETWORK.ETHEREUM`     | `afi.NetworkEthereum`  |
+| Unichain    | 130      | https://uniscan.xyz          | `NETWORK.UNICHAIN`     | `afi.NetworkUnichain`  |
+
+Sobrescribe explorers en runtime vía `NETWORK_EXPLORERS` (TS) o
+`afi.NetworkExplorers` (Go).
+
+### DEXes soportadas
+
+```typescript
+import { DEX } from "@afi-run/sdk"
+// DEX.UNI_V3 · DEX.UNI_V4 · DEX.CAKE_V3 · DEX.AERODROME
+// DEX.BALANCER · DEX.CURVE128 · DEX.CURVE256 · DEX.FLUID
+```
+
+```go
+// afi.DexUniV3 · afi.DexUniV4 · afi.DexCakeV3 · afi.DexAerodrome
+// afi.DexBalancer · afi.DexCurve128 · afi.DexCurve256 · afi.DexFluid
+```
+
+### Constantes de contrato
+
+| Nombre                  | Valor |
+|-------------------------|-------|
+| Router AFI (Base)       | `0xB8cC65321d169D55b93b4402D795701c6B308ce4` |
+| WETH (Base)             | `0x4200000000000000000000000000000000000006` |
+| Multicall3 (todas)      | `0xcA11bde05977b3631167028862bE2a173976CA11` |
+| URL base de la API      | `https://rpc.afi.run` |
+| Buffer de gas predet.   | `15` (%) |
+
+```typescript
+import {
+  AFI_ADDRESS,
+  WETH,
+  MULTICALL3_ADDRESS,
+  DEFAULT_GAS_BUFFER_PERCENT,
+  NETWORK_CHAIN_IDS,
+} from "@afi-run/sdk"
+```
+
+```go
+afi.AfiAddress         // common.Address
+afi.WETH               // common.Address
+afi.Multicall3Address  // common.Address
+afi.DefaultGasBufferPercent
+afi.NetworkChainIDs    // map[Network]int64
+```
+
+---
+
+## Directorio de ejemplos
+
+| Archivo / carpeta                      | Qué muestra |
+|----------------------------------------|-------------|
+| `examples/nodejs/1-list-tokens.ts`     | Listar tokens activos en Base y BSC |
+| `examples/nodejs/2-get-quote.ts`       | Builder con todas las opciones (priceBase, dexs, Token objects) |
+| `examples/nodejs/3-execute-swap.ts`    | Cotizar → revisar → ejecutar (flujo recomendado para usuario) |
+| `examples/nodejs/4-full-flow.ts`       | `.execute()` en una llamada |
+| `examples/nodejs/5-approve-only.ts`    | Etapas: tokenInfo → hasAllowance → approve → simulate → submit → wait |
+| `examples/go/list-tokens/`             | Listar tokens activos |
+| `examples/go/get-quote/`               | Functional options |
+| `examples/go/execute-swap/`            | Cotizar → revisar → ejecutar |
+| `examples/go/full-flow/`               | `Swap()` en una llamada |
+| `examples/go/approve-only/`            | Flujo por etapas |
+
+Correr ejemplos TS:
+
+```bash
+cd nodejs && npm install
+npx ts-node ../examples/nodejs/1-list-tokens.ts
+```
+
+Correr ejemplos Go:
+
+```bash
+cd examples/go && go mod tidy
+go run ./list-tokens
+```
+
+---
+
+## Desarrollo
+
+### Build desde el código fuente
+
+```bash
+# TypeScript
+cd nodejs
+npm install
+npm run build       # genera en dist/
+npm run typecheck   # tsc --noEmit
+npm test            # vitest
+
+# Go
+cd go
+go mod tidy
+go build ./...
+go test ./...
+```
+
+### Layout del proyecto
+
+```
+afi-sdk/
+├── nodejs/          ── @afi-run/sdk (TypeScript)
+│   ├── src/
+│   │   ├── client.ts, builder.ts          ── client público + builder de cotización
+│   │   ├── token.ts, multicall.ts         ── lecturas ERC-20 + Multicall3
+│   │   ├── swap.ts, quoter.ts             ── pipelines de swap + cotización
+│   │   ├── address.ts, slippage.ts        ── helpers de DX
+│   │   ├── serialize.ts, explorer.ts      ── helpers JSON + URL
+│   │   ├── errors.ts, types.ts            ── clases de error + tipos públicos
+│   │   ├── constants.ts, utils.ts         ── ABIs, direcciones, unidades
+│   │   └── index.ts                       ── exports públicos
+│   └── src/__tests__/                     ── 159 tests unitarios
+├── go/              ── github.com/afi-run/sdk/go
+│   ├── client.go, options.go              ── client público + functional options
+│   ├── token.go, multicall.go             ── lecturas ERC-20 + Multicall3
+│   ├── swap.go, quoter.go                 ── pipelines de swap + cotización
+│   ├── address.go, slippage.go            ── helpers de DX
+│   ├── serialize.go, explorer.go          ── helpers JSON + URL
+│   ├── errors.go, types.go                ── tipo de error + tipos públicos
+│   └── *_test.go                          ── 159 tests unitarios
+└── examples/        ── ejemplos end-to-end ejecutables
+```
+
+### Estrategia de testing
+
+El SDK está **totalmente unit-testeado** sin dependencias externas: las
+llamadas RPC y HTTP están mockeadas. Correlas con `npm test` o `go test ./...`.
+
+En tus propios tests, mockea la frontera `AfiClient` / `*afi.Client` — el SDK
+ya confía en que el RPC devuelve respuestas válidas, y ese es el punto más
+limpio para tus fixtures.
+
+---
+
+## Licencia
+
+MIT © contribuidores de AFI Run. Mira [LICENSE](./LICENSE) para detalles.

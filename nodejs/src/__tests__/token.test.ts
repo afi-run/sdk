@@ -15,6 +15,7 @@ import type { base } from "viem/chains"
 type MockPublicClient = Partial<PublicClient<Transport, typeof base>> & {
   readContract: ReturnType<typeof vi.fn>
   waitForTransactionReceipt: ReturnType<typeof vi.fn>
+  estimateContractGas: ReturnType<typeof vi.fn>
 }
 
 type MockWalletClient = Partial<WalletClient<Transport, typeof base, Account>> & {
@@ -31,6 +32,7 @@ beforeEach(() => {
   pub = {
     readContract: vi.fn(),
     waitForTransactionReceipt: vi.fn().mockResolvedValue({}),
+    estimateContractGas: vi.fn().mockResolvedValue(50_000n),
   }
   wallet = {
     writeContract: vi.fn().mockResolvedValue("0xapprovetxhash"),
@@ -108,7 +110,7 @@ describe("assertSufficientBalance", () => {
 describe("ensureExactApproval", () => {
   it("skips approval when allowance is already sufficient", async () => {
     pub.readContract!.mockResolvedValue(1000_000000n) // allowance >= amount
-    const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     expect(result).toBeNull()
     expect(wallet.writeContract).not.toHaveBeenCalled()
   })
@@ -119,7 +121,7 @@ describe("ensureExactApproval", () => {
       .mockResolvedValueOnce(500_000000n) // allowance (after approve - re-check)
     wallet.writeContract!.mockResolvedValue("0xapprovetx")
 
-    const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
 
     expect(result).toBe("0xapprovetx")
     expect(wallet.writeContract).toHaveBeenCalledWith(
@@ -136,7 +138,7 @@ describe("ensureExactApproval", () => {
       .mockResolvedValueOnce(500_000000n)  // after approve re-check
     wallet.writeContract!.mockResolvedValue("0xtxhash")
 
-    await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
 
     // First call should be reset to 0
     expect(wallet.writeContract).toHaveBeenNthCalledWith(
@@ -158,7 +160,7 @@ describe("ensureExactApproval", () => {
       .mockRejectedValueOnce(new Error("reset not supported")) // reset fails
       .mockResolvedValueOnce("0xtxhash")                      // actual approve succeeds
 
-    const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     expect(result).toBe("0xtxhash")
   })
 
@@ -169,7 +171,7 @@ describe("ensureExactApproval", () => {
     wallet.writeContract!.mockResolvedValue("0xtxhash")
 
     await expect(
-      ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any),
+      ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15),
     ).rejects.toBeInstanceOf(ApprovalError)
   })
 
@@ -178,7 +180,7 @@ describe("ensureExactApproval", () => {
     wallet.writeContract!.mockRejectedValue(new Error("user rejected"))
 
     await expect(
-      ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any),
+      ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15),
     ).rejects.toBeInstanceOf(ApprovalError)
   })
 })
@@ -186,7 +188,7 @@ describe("ensureExactApproval", () => {
 describe("submitApproval", () => {
   it("returns null when allowance is already sufficient", async () => {
     pub.readContract!.mockResolvedValue(1000_000000n)
-    const result = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const result = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     expect(result).toBeNull()
     expect(wallet.writeContract).not.toHaveBeenCalled()
   })
@@ -195,7 +197,7 @@ describe("submitApproval", () => {
     pub.readContract!.mockResolvedValue(0n)
     wallet.writeContract!.mockResolvedValue("0xpending")
 
-    const result = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const result = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     expect(result).not.toBeNull()
     expect(result!.txHash).toBe("0xpending")
     // wait should not have been called yet
@@ -209,7 +211,7 @@ describe("submitApproval", () => {
     wallet.writeContract!.mockResolvedValue("0xpending")
     pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 123n, gasUsed: 21000n })
 
-    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     const receipt = await pending!.wait()
 
     expect(receipt.blockNumber).toBe(123n)
@@ -223,7 +225,7 @@ describe("submitApproval", () => {
     wallet.writeContract!.mockResolvedValue("0xpending")
     pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
 
-    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     await expect(pending!.wait()).rejects.toBeInstanceOf(ApprovalError)
   })
 
@@ -234,7 +236,7 @@ describe("submitApproval", () => {
     wallet.writeContract!.mockResolvedValue("0xtxhash")
     pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
 
-    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     await pending!.wait()
 
     expect(wallet.writeContract).toHaveBeenNthCalledWith(
@@ -256,7 +258,7 @@ describe("submitApproval", () => {
       .mockResolvedValueOnce("0xtxhash")
     pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
 
-    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any)
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     expect(pending!.txHash).toBe("0xtxhash")
   })
 
@@ -265,7 +267,43 @@ describe("submitApproval", () => {
     wallet.writeContract!.mockRejectedValue(new Error("user rejected"))
 
     await expect(
-      submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any),
+      submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15),
     ).rejects.toBeInstanceOf(ApprovalError)
+  })
+
+  it("passes gas estimate + buffer to writeContract", async () => {
+    pub.readContract!.mockResolvedValue(0n)
+    pub.estimateContractGas!.mockResolvedValue(50_000n)
+    wallet.writeContract!.mockResolvedValue("0xtxhash")
+
+    await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 20)
+
+    expect(wallet.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ gas: 60_000n }), // 50k * 1.20
+    )
+  })
+
+  it("uses no buffer when gasBufferPercent is 0", async () => {
+    pub.readContract!.mockResolvedValue(0n)
+    pub.estimateContractGas!.mockResolvedValue(50_000n)
+    wallet.writeContract!.mockResolvedValue("0xtxhash")
+
+    await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 0)
+
+    expect(wallet.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ gas: 50_000n }),
+    )
+  })
+
+  it("falls back to writeContract estimate when estimateContractGas reverts", async () => {
+    pub.readContract!.mockResolvedValue(0n)
+    pub.estimateContractGas!.mockRejectedValue(new Error("estimate failed"))
+    wallet.writeContract!.mockResolvedValue("0xtxhash")
+
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
+    expect(pending!.txHash).toBe("0xtxhash")
+    // gas not set — viem will estimate internally
+    const callArgs = wallet.writeContract!.mock.calls[0][0]
+    expect(callArgs.gas).toBeUndefined()
   })
 })

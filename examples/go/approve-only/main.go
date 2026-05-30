@@ -52,32 +52,39 @@ func main() {
 		log.Fatal("connect:", err)
 	}
 
-	// Step 4: Approve — txHash available immediately, wait separately
-	approval, err := client.Approve(ctx, usdc, quote.AmountInWei)
+	// Optional: pull symbol/decimals/balance/allowance for USDC in a single multicall.
+	info, err := client.MyTokenInfo(ctx, usdc)
 	if err != nil {
-		log.Fatal("approve:", err)
+		log.Fatal("token info:", err)
 	}
+	fmt.Printf("%s (%d decimals) — balance: %s, allowance: %s\n",
+		info.Symbol, info.Decimals, info.Balance, info.Allowance)
 
-	if approval == nil {
+	// Step 4: Approve only if the AFI contract isn't already allowed to spend amountIn.
+	already, err := client.HasAllowance(ctx, usdc, quote.AmountInWei)
+	if err != nil {
+		log.Fatal("has allowance:", err)
+	}
+	if already {
 		fmt.Println("Allowance already sufficient — approval skipped.")
 	} else {
-		fmt.Printf("Approval submitted: %s\n", approval.TxHash)
-		approvalReceipt, err := approval.Wait(ctx)
+		approval, err := client.Approve(ctx, usdc, quote.AmountInWei)
 		if err != nil {
-			log.Fatal("wait approval:", err)
+			log.Fatal("approve:", err)
 		}
-		fmt.Printf("Approval confirmed in block %d\n", approvalReceipt.BlockNumber)
+		if approval != nil {
+			fmt.Printf("Approval submitted: %s\n", approval.TxHash)
+			approvalReceipt, err := approval.Wait(ctx)
+			if err != nil {
+				log.Fatal("wait approval:", err)
+			}
+			fmt.Printf("Approval confirmed in block %d\n", approvalReceipt.BlockNumber)
+		}
 	}
 
-	// Step 5: Simulate — check before spending gas
-	ok, err := client.Simulate(ctx, quote, func(reason string) {
-		fmt.Printf("Simulation failed: %s\n", reason)
-	})
-	if err != nil {
-		log.Fatal("simulate:", err)
-	}
-	if !ok {
-		fmt.Println("Swap would revert — cancelled.")
+	// Step 5: Simulate — returns the revert reason as an *AfiError when the swap would fail.
+	if err := client.Simulate(ctx, quote); err != nil {
+		fmt.Printf("Swap would revert: %s — cancelled.\n", err)
 		return
 	}
 

@@ -231,5 +231,10 @@ func fetchQuoteFrom(ctx context.Context, opts *quoteOptions, feeBps uint16, quot
 		TokenOutPrice:     d.TokenOutPrice,
 		TokenInBasePrice:  d.TokenInBasePrice,
 		TokenOutBasePrice: d.TokenOutBasePrice,
+		CreatedAt:         timeNowMS(),
+		Network:           opts.network,
+		MaxHops:           opts.maxHops,
+		PriceBase:         opts.priceBase,
+		Dexs:              opts.dexs,
 	}, nil
 }

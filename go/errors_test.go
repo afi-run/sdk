@@ -26,6 +26,27 @@ func TestErrInsufficientBalance(t *testing.T) {
 	if afiErr.Message == "" {
 		t.Error("Message should not be empty")
 	}
+	if afiErr.Balance.Cmp(big.NewInt(100)) != 0 || afiErr.Required.Cmp(big.NewInt(500)) != 0 {
+		t.Errorf("Balance/Required not attached: %+v", afiErr)
+	}
+}
+
+func TestErrInsufficientBalanceDetailed(t *testing.T) {
+	err := ErrInsufficientBalanceDetailed("0xabc", "0xOwner", "USDC", 6, big.NewInt(500_000), big.NewInt(1_000_000))
+
+	var afiErr *AfiError
+	if !errors.As(err, &afiErr) {
+		t.Fatal("expected *AfiError")
+	}
+	msg := afiErr.Error()
+	for _, want := range []string{"USDC", "0xOwner", "0.5", "1"} {
+		if !contains(msg, want) {
+			t.Errorf("msg should contain %q: %s", want, msg)
+		}
+	}
+	if afiErr.Symbol != "USDC" || afiErr.Decimals != 6 || afiErr.Owner != "0xOwner" {
+		t.Errorf("context fields not populated: %+v", afiErr)
+	}
 }
 
 func TestErrQuote(t *testing.T) {

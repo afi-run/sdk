@@ -14,7 +14,7 @@ func TestPendingTxWait(t *testing.T) {
 		want := &TxReceipt{BlockNumber: 42, GasUsed: 21000}
 		p := &PendingTx{
 			TxHash: "0xabc",
-			waitFn: func(ctx context.Context) (*TxReceipt, error) {
+			waitFn: func(ctx context.Context, _ WaitForTxOptions) (*TxReceipt, error) {
 				return want, nil
 			},
 		}
@@ -31,7 +31,7 @@ func TestPendingTxWait(t *testing.T) {
 		boom := errors.New("boom")
 		p := &PendingTx{
 			TxHash: "0xabc",
-			waitFn: func(ctx context.Context) (*TxReceipt, error) {
+			waitFn: func(ctx context.Context, _ WaitForTxOptions) (*TxReceipt, error) {
 				return nil, boom
 			},
 		}
@@ -46,7 +46,7 @@ func TestPendingTxWait(t *testing.T) {
 		cancel()
 		var received context.Context
 		p := &PendingTx{
-			waitFn: func(c context.Context) (*TxReceipt, error) {
+			waitFn: func(c context.Context, _ WaitForTxOptions) (*TxReceipt, error) {
 				received = c
 				return &TxReceipt{}, nil
 			},
@@ -71,7 +71,7 @@ func TestPendingSwapWait(t *testing.T) {
 		}
 		p := &PendingSwap{
 			TxHash: "0xabc",
-			waitFn: func(ctx context.Context) (*SwapResult, error) {
+			waitFn: func(ctx context.Context, _ WaitForTxOptions) (*SwapResult, error) {
 				return want, nil
 			},
 		}
@@ -87,7 +87,7 @@ func TestPendingSwapWait(t *testing.T) {
 	t.Run("propagates error from waitFn", func(t *testing.T) {
 		boom := errors.New("reverted")
 		p := &PendingSwap{
-			waitFn: func(ctx context.Context) (*SwapResult, error) {
+			waitFn: func(ctx context.Context, _ WaitForTxOptions) (*SwapResult, error) {
 				return nil, boom
 			},
 		}
@@ -102,7 +102,7 @@ func TestPendingSwapWait(t *testing.T) {
 		cancel()
 		var received context.Context
 		p := &PendingSwap{
-			waitFn: func(c context.Context) (*SwapResult, error) {
+			waitFn: func(c context.Context, _ WaitForTxOptions) (*SwapResult, error) {
 				received = c
 				return &SwapResult{}, nil
 			},

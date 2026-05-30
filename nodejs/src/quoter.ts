@@ -150,6 +150,11 @@ export async function fetchQuote(
     feeBps,
     tokenInPrice:  d.tokenInPrice,
     tokenOutPrice: d.tokenOutPrice,
+    createdAt:     Date.now(),
+    network:       params.network,
+    maxHops:       params.maxHops,
+    priceBase:     params.priceBase,
+    dexs:          params.dexs,
   }
 
   if (d.tokenInBasePrice !== undefined)  quote.tokenInBasePrice  = d.tokenInBasePrice

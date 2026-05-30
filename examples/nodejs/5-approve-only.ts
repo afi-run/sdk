@@ -10,7 +10,7 @@
  *
  * Use this in apps that need step-by-step wallet prompts and progress UI.
  */
-import { AfiClient, NETWORK, formatUnits, InsufficientBalanceError } from "@afi-run/sdk"
+import { AfiClient, NETWORK, formatUnits, SimulationFailedError } from "@afi-run/sdk"
 
 const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 const WETH = "0x4200000000000000000000000000000000000006"
@@ -28,25 +28,36 @@ async function main() {
   console.log(`Quote: ${quote.amountIn} USDC → ~${quote.amountOut} WETH`)
   console.log(`Minimum: ${quote.minOut} WETH  (${quote.slippage}% slippage)`)
 
+  // Optional: inspect the token + the caller's balance/allowance in a single multicall.
+  const info = await client.tokenInfo(USDC, "0xYOUR_WALLET_ADDRESS")
+  console.log(`${info.symbol} (${info.decimals} decimals) — balance: ${info.balance}, allowance: ${info.allowance}`)
+
   // Step 2: Connect signer when user is ready to transact
   client.connect("0xYOUR_PRIVATE_KEY")
 
-  // Step 3: Approve — txHash available immediately, wait separately
-  const approval = await client.approve(quote.tokenIn, quote.amountInWei)
-
-  if (approval === null) {
+  // Step 3: Approve only if needed — read allowance first, skip the tx when sufficient.
+  const alreadyApproved = await client.hasAllowance(quote.tokenIn, quote.amountInWei)
+  if (alreadyApproved) {
     console.log("Allowance already sufficient — approval skipped.")
   } else {
-    console.log(`Approval submitted: ${approval.txHash}`)
-    const approvalReceipt = await approval.wait()
-    console.log(`Approval confirmed in block ${approvalReceipt.blockNumber}`)
+    const approval = await client.approve(quote.tokenIn, quote.amountInWei)
+    if (approval) {
+      console.log(`Approval submitted: ${approval.txHash}`)
+      const approvalReceipt = await approval.wait()
+      console.log(`Approval confirmed in block ${approvalReceipt.blockNumber}`)
+    }
   }
 
-  // Step 4: Simulate — check before spending gas
-  const ok = await client.simulate(quote, (reason) => {
-    console.error(`Simulation failed: ${reason}`)
-  })
-  if (!ok) { console.log("Swap would revert — cancelled."); return }
+  // Step 4: Simulate — throws SimulationFailedError with the revert reason on failure.
+  try {
+    await client.simulate(quote)
+  } catch (e) {
+    if (e instanceof SimulationFailedError) {
+      console.error(`Swap would revert: ${e.reason} — cancelled.`)
+      return
+    }
+    throw e
+  }
 
   // Step 5: Submit — send the swap tx, get txHash immediately
   const pending = await client.submitSwap(quote)

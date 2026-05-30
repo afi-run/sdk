@@ -49,12 +49,14 @@ export class QuoteBuilder {
 
   /** Fetches the quote. No transaction is sent. */
   async get(): Promise<Quote> {
-    const feeBps = await this.client.getFeeBps()
-    const req = { ...this.req }
-    if (!req.rpcUrls || req.rpcUrls.length === 0) {
-      req.rpcUrls = [{ url: this.client.rpcUrl }]
-    }
-    return fetchQuote(req, feeBps, this.client.quoterUrl)
+    return this.client._runLogged("getQuote", async () => {
+      const feeBps = await this.client.getFeeBps()
+      const req = { ...this.req }
+      if (!req.rpcUrls || req.rpcUrls.length === 0) {
+        req.rpcUrls = [{ url: this.client.rpcUrl }]
+      }
+      return fetchQuote(req, feeBps, this.client.quoterUrl)
+    })
   }
 
   /** Fetches the quote and executes the swap. Requires a connected signer. */

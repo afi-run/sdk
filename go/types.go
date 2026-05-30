@@ -3,9 +3,12 @@ package afi
 import (
 	"context"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+func timeNowMS() int64 { return time.Now().UnixMilli() }
 
 // Network represents a supported blockchain network.
 type Network string
@@ -45,36 +48,163 @@ type Config struct {
 	RPCURL string
 	// Private key hex string with or without 0x prefix (optional — required only for Approve, SubmitSwap, ExecuteSwap, Swap).
 	PrivateKey string
+	// GasBufferPercent adds a percentage on top of the estimated gas for write txs (approve, swap).
+	// Zero (or unset) falls back to DefaultGasBufferPercent (15%). Use 0 explicitly via WithGasBuffer(0) per call.
+	GasBufferPercent uint
+	// Logger receives a LogEvent for each significant SDK operation. Optional.
+	Logger Logger
+}
+
+// LogEvent describes a single SDK operation for diagnostics.
+type LogEvent struct {
+	// Kind is "rpc" for chain calls or "api" for AFI HTTP API calls.
+	Kind string
+	// Method is the operation name (e.g. "GetQuote", "ExecuteSwap", "TokenInfo").
+	Method string
+	// DurationMs is the wall-clock duration of the operation.
+	DurationMs int64
+	// OK is true when the operation returned without error.
+	OK bool
+	// Err is non-nil when OK is false.
+	Err error
+}
+
+// Logger is the callback signature for diagnostic events.
+type Logger func(event LogEvent)
+
+// WaitForTxOptions controls how WaitForTx polls and times out.
+type WaitForTxOptions struct {
+	// Confirmations is the minimum number of confirmations required (default: 1).
+	Confirmations uint64
+	// TimeoutMs aborts the wait after the given duration in milliseconds (default: no timeout).
+	TimeoutMs int64
+	// PollIntervalMs overrides the polling interval (default: 500ms).
+	PollIntervalMs int64
+}
+
+// ExecuteOptions controls behavior of ExecuteSwap / Swap.
+type ExecuteOptions struct {
+	// Confirmations is the minimum number of confirmations to wait for after submission (default: 1).
+	Confirmations uint64
+	// TimeoutMs is the timeout for the confirmation wait (default: no timeout).
+	TimeoutMs int64
+	// Nonce is an explicit nonce for the swap tx. When nil, the SDK uses the
+	// managed nonce (if UseManagedNonce was called) or queries the RPC.
+	Nonce *uint64
+}
+
+// TxStatus is the result of a non-blocking transaction status check.
+type TxStatus string
+
+const (
+	TxStatusPending TxStatus = "pending"
+	TxStatusSuccess TxStatus = "success"
+	TxStatusFailed  TxStatus = "failed"
+	TxStatusUnknown TxStatus = "unknown"
+)
+
+// TokenPrice is the live exchange rate for a token pair.
+type TokenPrice struct {
+	// Price is how many units of tokenOut you get for 1 unit of tokenIn.
+	Price string
+	// Inverse is how many units of tokenIn you get for 1 unit of tokenOut.
+	Inverse string
+}
+
+// PreflightProblem is a single blocking issue identified by Preflight.
+type PreflightProblem struct {
+	Code    string
+	Message string
+}
+
+// PreflightReport is the result of Client.Preflight.
+type PreflightReport struct {
+	// CanExecute is true when no blocking problems were found. ExecuteSwap
+	// will still auto-handle approval if NeedsApproval is true.
+	CanExecute bool
+	// NeedsApproval is true when an approve tx is needed before the swap can execute.
+	NeedsApproval bool
+	// Problems holds blocking issues — empty when CanExecute is true.
+	Problems []PreflightProblem
+	// Balance is the current tokenIn balance of the wallet.
+	Balance *big.Int
+	// Allowance is the current allowance granted to the AFI router.
+	Allowance *big.Int
+}
+
+// SwapCostEstimate is the projected gas cost for executing a quote.
+type SwapCostEstimate struct {
+	// Gas is the estimated gas units (before the SDK buffer).
+	Gas uint64
+	// GasWithBuffer is Gas multiplied by (1 + gasBufferPercent/100).
+	GasWithBuffer uint64
+	// GasPriceWei is the maxFeePerGas the SDK would use (baseFee*2 + tip).
+	GasPriceWei *big.Int
+	// TotalWei is GasWithBuffer * GasPriceWei.
+	TotalWei *big.Int
+	// TotalETH is TotalWei formatted as ETH (18 decimals).
+	TotalETH string
+}
+
+// HealthCheck is the result of a Health() probe.
+type HealthCheck struct {
+	RPC HealthEndpoint
+	API HealthEndpoint
+}
+
+// HealthEndpoint describes the result of probing a single endpoint.
+type HealthEndpoint struct {
+	OK         bool
+	DurationMs int64
+	// Detail carries the chain ID for RPC and the HTTP status for API.
+	Detail string
+	Err    error
 }
 
 // TxReceipt holds the on-chain confirmation details of a submitted transaction.
 type TxReceipt struct {
 	BlockNumber uint64
 	GasUsed     uint64
+	// EffectiveGasPrice is the wei/gas price the chain charged. Nil when the receipt didn't expose it.
+	EffectiveGasPrice *big.Int
+	// FeeWei is GasUsed * EffectiveGasPrice.
+	FeeWei *big.Int
+	// FeeETH is FeeWei formatted in ETH (18 decimals).
+	FeeETH string
 }
 
 // PendingTx represents a submitted transaction that can be waited on for confirmation.
 // TxHash is available immediately; call Wait() to block until the tx is mined.
 type PendingTx struct {
 	TxHash string
-	waitFn func(ctx context.Context) (*TxReceipt, error)
+	waitFn func(ctx context.Context, opts WaitForTxOptions) (*TxReceipt, error)
 }
 
 // Wait blocks until the transaction is confirmed and returns the receipt.
-func (p *PendingTx) Wait(ctx context.Context) (*TxReceipt, error) {
-	return p.waitFn(ctx)
+// Pass WaitForTxOptions to require more than 1 confirmation or set a timeout.
+func (p *PendingTx) Wait(ctx context.Context, opts ...WaitForTxOptions) (*TxReceipt, error) {
+	var o WaitForTxOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return p.waitFn(ctx, o)
 }
 
 // PendingSwap represents a submitted swap transaction.
 // TxHash is available immediately; call Wait() to block until confirmed and get the SwapResult.
 type PendingSwap struct {
 	TxHash string
-	waitFn func(ctx context.Context) (*SwapResult, error)
+	waitFn func(ctx context.Context, opts WaitForTxOptions) (*SwapResult, error)
 }
 
 // Wait blocks until the swap is confirmed and returns the result parsed from the SwapExecuted event.
-func (p *PendingSwap) Wait(ctx context.Context) (*SwapResult, error) {
-	return p.waitFn(ctx)
+// Pass WaitForTxOptions to require more than 1 confirmation or set a timeout.
+func (p *PendingSwap) Wait(ctx context.Context, opts ...WaitForTxOptions) (*SwapResult, error) {
+	var o WaitForTxOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return p.waitFn(ctx, o)
 }
 
 // Token represents a supported token on Base.
@@ -137,6 +267,38 @@ type Quote struct {
 	// TokenOutBasePrice is the price of TokenOut in the priceBase asset.
 	// Present only when WithPriceBase is used.
 	TokenOutBasePrice string
+	// CreatedAt is the unix-millisecond timestamp when the quote was fetched.
+	CreatedAt int64
+	// Network the quote was fetched against — needed by RefreshQuote.
+	Network Network
+	// MaxHops used in the routing — needed by RefreshQuote.
+	MaxHops int
+	// PriceBase asset used (if any) — needed by RefreshQuote.
+	PriceBase string
+	// Dexs restriction used (if any) — needed by RefreshQuote.
+	Dexs []Dex
+}
+
+// IsStale returns true when the quote is older than maxAgeSec seconds.
+func (q *Quote) IsStale(maxAgeSec int64) bool {
+	if q.CreatedAt == 0 {
+		return false
+	}
+	return (timeNowMS()-q.CreatedAt)/1000 > maxAgeSec
+}
+
+// TokenInfo holds metadata + (optionally) balance/allowance for a token, fetched in one multicall.
+type TokenInfo struct {
+	Address   common.Address
+	Symbol    string
+	Name      string
+	Decimals  uint8
+	// Balance is the balance of Owner, when Owner was provided.
+	Balance *big.Int
+	// Allowance is the allowance granted by Owner to the AFI contract, when Owner was provided.
+	Allowance *big.Int
+	// Owner is the address used for Balance/Allowance lookups. Zero address when not queried.
+	Owner common.Address
 }
 
 // SwapResult holds the outcome of an executed swap.
@@ -150,4 +312,10 @@ type SwapResult struct {
 	TokenIn   common.Address
 	TokenOut  common.Address
 	GasUsed   uint64
+	// EffectiveGasPrice is the wei/gas price the chain charged.
+	EffectiveGasPrice *big.Int
+	// FeeWei is GasUsed * EffectiveGasPrice.
+	FeeWei *big.Int
+	// FeeETH is FeeWei formatted in ETH (18 decimals).
+	FeeETH string
 }

@@ -29,26 +29,31 @@ func simulateSwap(ctx context.Context, client *ethclient.Client, afiABI abi.ABI,
 		Data: input,
 	}, nil)
 	if err != nil {
+		if data := extractRevertData(err); data != nil {
+			if decoded := DecodeRevertReason(data); decoded != nil {
+				return ErrSimulationDecoded(decoded.String(), decoded)
+			}
+		}
 		return ErrSimulation(err.Error())
 	}
 	return nil
 }
 
-func submitSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote) (*PendingSwap, error) {
+func submitSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote, gasBuffer uint, nonceOverride *uint64) (*PendingSwap, error) {
 	input, err := afiABI.Pack("swap", q.TokenIn, q.AmountInWei, q.TokenOut, q.MinOutWei, q.Steps)
 	if err != nil {
 		return nil, fmt.Errorf("pack swap: %w", err)
 	}
 
-	txHash, err := c.sendTx(ctx, &AfiAddress, input)
+	txHash, err := c.sendTx(ctx, &AfiAddress, input, gasBuffer, nonceOverride)
 	if err != nil {
 		return nil, ErrSwapReverted(err.Error())
 	}
 
 	pending := &PendingSwap{
 		TxHash: txHash,
-		waitFn: func(ctx context.Context) (*SwapResult, error) {
-			receipt, err := c.waitReceipt(ctx, txHash)
+		waitFn: func(ctx context.Context, opts WaitForTxOptions) (*SwapResult, error) {
+			receipt, err := c.waitReceiptWithOpts(ctx, txHash, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -59,6 +64,7 @@ func submitSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote) (*Pend
 			if err != nil {
 				return nil, err
 			}
+			eff, feeWei, feeEth := feeFromReceipt(receipt)
 			return &SwapResult{
 				TxHash:      receipt.TxHash,
 				BlockNumber: receipt.BlockNumber.Uint64(),
@@ -67,10 +73,25 @@ func submitSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote) (*Pend
 				TokenIn:     q.TokenIn,
 				TokenOut:    q.TokenOut,
 				GasUsed:     receipt.GasUsed,
+				EffectiveGasPrice: eff,
+				FeeWei:      feeWei,
+				FeeETH:      feeEth,
 			}, nil
 		},
 	}
 	return pending, nil
+}
+
+// feeFromReceipt extracts the effective gas price and total fee from a tx receipt.
+func feeFromReceipt(receipt *types.Receipt) (effectiveGasPrice, feeWei *big.Int, feeEth string) {
+	if receipt.EffectiveGasPrice != nil {
+		effectiveGasPrice = new(big.Int).Set(receipt.EffectiveGasPrice)
+	} else {
+		effectiveGasPrice = new(big.Int)
+	}
+	feeWei = new(big.Int).Mul(effectiveGasPrice, new(big.Int).SetUint64(receipt.GasUsed))
+	feeEth = formatAmount(feeWei, 18)
+	return
 }
 
 func parseSwapExecuted(afiABI abi.ABI, receipt *types.Receipt) (*big.Int, *big.Int, error) {
@@ -101,11 +122,79 @@ func parseSwapExecuted(afiABI abi.ABI, receipt *types.Receipt) (*big.Int, *big.I
 	return nil, nil, fmt.Errorf("SwapExecuted event not found in receipt")
 }
 
+// afiABICached is parsed once at package init for use by standalone helpers like ParseSwapResult.
+var afiABICached = mustParseABI(afiABIJSON)
+
+func mustParseABI(s string) abi.ABI {
+	a, err := abi.JSON(strings.NewReader(s))
+	if err != nil {
+		panic(fmt.Errorf("parse abi: %w", err))
+	}
+	return a
+}
+
+// ParseSwapResult inspects a transaction receipt for the AFI SwapExecuted event
+// and reconstructs the SwapResult. Returns (nil, nil) when no SwapExecuted log
+// is present (e.g. the tx wasn't an AFI swap).
+//
+// Use this for hashes obtained outside the SDK (indexers, replay tools, queued jobs).
+func ParseSwapResult(receipt *types.Receipt) (*SwapResult, error) {
+	event, ok := afiABICached.Events["SwapExecuted"]
+	if !ok {
+		return nil, fmt.Errorf("SwapExecuted not in ABI")
+	}
+	for _, lg := range receipt.Logs {
+		if !strings.EqualFold(lg.Address.Hex(), AfiAddress.Hex()) {
+			continue
+		}
+		if len(lg.Topics) < 4 || lg.Topics[0] != event.ID {
+			continue
+		}
+		decoded := make(map[string]any)
+		if err := afiABICached.UnpackIntoMap(decoded, "SwapExecuted", lg.Data); err != nil {
+			return nil, fmt.Errorf("unpack SwapExecuted: %w", err)
+		}
+		amountIn, _ := decoded["amountIn"].(*big.Int)
+		amountOut, _ := decoded["amountOut"].(*big.Int)
+		eff, feeWei, feeEth := feeFromReceipt(receipt)
+		return &SwapResult{
+			TxHash:      receipt.TxHash,
+			BlockNumber: receipt.BlockNumber.Uint64(),
+			AmountIn:    amountIn,
+			AmountOut:   amountOut,
+			// Topics[1] = from (indexed), Topics[2] = assetIn, Topics[3] = assetOut
+			TokenIn:  common.HexToAddress(lg.Topics[2].Hex()),
+			TokenOut: common.HexToAddress(lg.Topics[3].Hex()),
+			GasUsed:  receipt.GasUsed,
+			EffectiveGasPrice: eff,
+			FeeWei:   feeWei,
+			FeeETH:   feeEth,
+		}, nil
+	}
+	return nil, nil
+}
+
+// applyGasBuffer returns gas * (1 + bufferPercent/100). bufferPercent of 0 returns gas unchanged.
+func applyGasBuffer(gas uint64, bufferPercent uint) uint64 {
+	if bufferPercent == 0 {
+		return gas
+	}
+	return gas * (100 + uint64(bufferPercent)) / 100
+}
+
 // sendTx builds, signs, and sends a transaction. Returns the tx hash.
-func (c *Client) sendTx(ctx context.Context, to *common.Address, data []byte) (string, error) {
+// gasBuffer is the percentage added on top of the estimated gas (0 = no buffer).
+// nonceOverride takes priority over both the managed counter and the RPC query.
+// Uses the RPC's chain ID (cached on the Client) so multi-chain execution works.
+func (c *Client) sendTx(ctx context.Context, to *common.Address, data []byte, gasBuffer uint, nonceOverride *uint64) (string, error) {
 	from := crypto.PubkeyToAddress(c.key.PublicKey)
 
-	nonce, err := c.eth.PendingNonceAt(ctx, from)
+	chainID, err := c.ChainID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("chain id: %w", err)
+	}
+
+	nonce, err := c.allocateNonce(ctx, nonceOverride, from)
 	if err != nil {
 		return "", fmt.Errorf("nonce: %w", err)
 	}
@@ -116,9 +205,13 @@ func (c *Client) sendTx(ctx context.Context, to *common.Address, data []byte) (s
 		Data: data,
 	})
 	if err != nil {
+		// estimateGas reverts hide the actual reason — replay via eth_call to surface it.
+		if reason := callRevertReason(ctx, c.eth, from, to, data); reason != "" {
+			return "", fmt.Errorf("estimate gas: %s", reason)
+		}
 		return "", fmt.Errorf("estimate gas: %w", err)
 	}
-	gasLimit = gasLimit * 12 / 10 // 1.2x buffer
+	gasLimit = applyGasBuffer(gasLimit, gasBuffer)
 
 	tip, err := c.eth.SuggestGasTipCap(ctx)
 	if err != nil {
@@ -133,7 +226,7 @@ func (c *Client) sendTx(ctx context.Context, to *common.Address, data []byte) (s
 	maxFee := new(big.Int).Add(new(big.Int).Mul(head.BaseFee, big.NewInt(2)), tip)
 
 	tx := types.NewTx(&types.DynamicFeeTx{
-		ChainID:   big.NewInt(BaseChainID),
+		ChainID:   chainID,
 		Nonce:     nonce,
 		To:        to,
 		Gas:       gasLimit,
@@ -142,7 +235,7 @@ func (c *Client) sendTx(ctx context.Context, to *common.Address, data []byte) (s
 		Data:      data,
 	})
 
-	signed, err := types.SignTx(tx, types.NewLondonSigner(big.NewInt(BaseChainID)), c.key)
+	signed, err := types.SignTx(tx, types.NewLondonSigner(chainID), c.key)
 	if err != nil {
 		return "", fmt.Errorf("sign: %w", err)
 	}
@@ -154,20 +247,63 @@ func (c *Client) sendTx(ctx context.Context, to *common.Address, data []byte) (s
 	return signed.Hash().Hex(), nil
 }
 
+// callRevertReason re-executes the call via eth_call to extract the revert message
+// that estimateGas swallowed. Returns "" if we can't get a useful message.
+// When the revert data is decodable as a known custom error, returns its formatted name.
+func callRevertReason(ctx context.Context, client *ethclient.Client, from common.Address, to *common.Address, data []byte) string {
+	_, err := client.CallContract(ctx, ethereum.CallMsg{From: from, To: to, Data: data}, nil)
+	if err == nil {
+		return ""
+	}
+	if rd := extractRevertData(err); rd != nil {
+		if decoded := DecodeRevertReason(rd); decoded != nil {
+			return decoded.String()
+		}
+	}
+	return err.Error()
+}
+
 func (c *Client) waitReceipt(ctx context.Context, txHash string) (*types.Receipt, error) {
+	return c.waitReceiptWithOpts(ctx, txHash, WaitForTxOptions{})
+}
+
+func (c *Client) waitReceiptWithOpts(ctx context.Context, txHash string, opts WaitForTxOptions) (*types.Receipt, error) {
+	confs := opts.Confirmations
+	if confs == 0 {
+		confs = 1
+	}
+	poll := time.Duration(opts.PollIntervalMs) * time.Millisecond
+	if poll <= 0 {
+		poll = 500 * time.Millisecond
+	}
+	if opts.TimeoutMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+
 	hash := common.HexToHash(txHash)
 	for {
 		receipt, err := c.eth.TransactionReceipt(ctx, hash)
 		if err == nil {
-			return receipt, nil
-		}
-		if !errors.Is(err, ethereum.NotFound) {
+			if confs <= 1 {
+				return receipt, nil
+			}
+			head, err := c.eth.HeaderByNumber(ctx, nil)
+			if err != nil {
+				return nil, fmt.Errorf("get head: %w", err)
+			}
+			got := head.Number.Uint64() - receipt.BlockNumber.Uint64() + 1
+			if got >= confs {
+				return receipt, nil
+			}
+		} else if !errors.Is(err, ethereum.NotFound) {
 			return nil, fmt.Errorf("get receipt: %w", err)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(poll):
 		}
 	}
 }
