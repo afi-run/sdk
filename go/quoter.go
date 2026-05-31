@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -12,6 +13,40 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+// doHTTPRequest centralises the typed-error mapping for HTTP responses.
+// Returns:
+//   - *NetworkError    transport / dial / decode failure
+//   - *BadRequestError  4xx (caller payload bad)
+//   - *ServerError      5xx (service down — retry-safe)
+//   - the raw body on 2xx success
+func doHTTPRequest(ctx context.Context, method, url string, payload []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, &NetworkError{Err: fmt.Errorf("build request: %w", err)}
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, &NetworkError{Err: err}
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return body, nil
+	case resp.StatusCode >= 500:
+		return nil, &ServerError{Status: resp.StatusCode, Body: string(body)}
+	default:
+		// 3xx is not expected from these JSON APIs — bucket with 4xx so the caller surfaces it.
+		return nil, &BadRequestError{Status: resp.StatusCode, Body: string(body)}
+	}
+}
 
 type quoterRequest struct {
 	Network     string       `json:"network"`
@@ -46,29 +81,29 @@ type quoterHop struct {
 }
 
 type quoterResponseData struct {
-	TokenIn          string      `json:"tokenIn"`
-	TokenOut         string      `json:"tokenOut"`
-	AmountIn         string      `json:"amountIn"`
-	AmountOut        string      `json:"amountOut"`
-	MinOut           string      `json:"minOut"`
-	AmountInRaw      string      `json:"amountInRaw"`
-	AmountOutRaw     string      `json:"amountOutRaw"`
-	MinOutRaw        string      `json:"minOutRaw"`
-	Steps            string      `json:"steps"`
-	Slippage         float64     `json:"slippage"`
-	Path             []string    `json:"path"`
-	Hops             []quoterHop `json:"hops"`
-	TokenInPrice     string      `json:"tokenInPrice"`
-	TokenOutPrice    string      `json:"tokenOutPrice"`
+	TokenIn           string      `json:"tokenIn"`
+	TokenOut          string      `json:"tokenOut"`
+	AmountIn          string      `json:"amountIn"`
+	AmountOut         string      `json:"amountOut"`
+	MinOut            string      `json:"minOut"`
+	AmountInRaw       string      `json:"amountInRaw"`
+	AmountOutRaw      string      `json:"amountOutRaw"`
+	MinOutRaw         string      `json:"minOutRaw"`
+	Steps             string      `json:"steps"`
+	Slippage          float64     `json:"slippage"`
+	Path              []string    `json:"path"`
+	Hops              []quoterHop `json:"hops"`
+	TokenInPrice      string      `json:"tokenInPrice"`
+	TokenOutPrice     string      `json:"tokenOutPrice"`
 	TokenInBasePrice  string      `json:"tokenInBasePrice"`
 	TokenOutBasePrice string      `json:"tokenOutBasePrice"`
 }
 
 type quoterResponse struct {
-	Status  string          `json:"status"`
-	Message string          `json:"message"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 	// Data is an object on success and may be a string on error.
-	Data    json.RawMessage `json:"data"`
+	Data json.RawMessage `json:"data"`
 }
 
 func formatAmount(amount *big.Int, decimals uint8) string {
@@ -124,25 +159,15 @@ func fetchQuoteFrom(ctx context.Context, opts *quoteOptions, feeBps uint16, quot
 	// json.Marshal cannot fail for a struct with only basic scalar fields
 	payload, _ := json.Marshal(body)
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, quoterURL, bytes.NewReader(payload))
+	respBody, err := doHTTPRequest(ctx, http.MethodPost, quoterURL, payload)
 	if err != nil {
-		return nil, ErrQuote(fmt.Sprintf("build request: %v", err))
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, ErrQuote(fmt.Sprintf("network: %v", err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, ErrQuote(fmt.Sprintf("HTTP %d", resp.StatusCode))
+		// Surface the typed error directly — callers can still match QUOTE_FAILED via
+		// errors.As but get the precise BadRequest / Server / Network bucket too.
+		return nil, err
 	}
 
 	var result quoterResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, ErrQuote(fmt.Sprintf("decode: %v", err))
 	}
 
@@ -237,4 +262,174 @@ func fetchQuoteFrom(ctx context.Context, opts *quoteOptions, feeBps uint16, quot
 		PriceBase:         opts.priceBase,
 		Dexs:              opts.dexs,
 	}, nil
+}
+
+// ─── Generic JSON endpoint helpers ───────────────────────────────────────────
+
+// commandRequest wraps a /command payload with the action discriminator.
+type commandRequest struct {
+	Action string                 `json:"action"`
+	Body   map[string]interface{} `json:"-"`
+}
+
+// marshal merges Action + Body into a single JSON object.
+func (cr commandRequest) marshal() ([]byte, error) {
+	m := make(map[string]interface{}, len(cr.Body)+1)
+	for k, v := range cr.Body {
+		m[k] = v
+	}
+	m["action"] = cr.Action
+	return json.Marshal(m)
+}
+
+// postCommand POSTs to /command with the given action + payload, decoding the
+// service envelope ({status, data, time}) and unmarshalling `data` into out.
+func (c *Client) postCommand(ctx context.Context, action string, body map[string]interface{}, out interface{}) error {
+	payload, err := commandRequest{Action: action, Body: body}.marshal()
+	if err != nil {
+		return ErrQuote(fmt.Sprintf("marshal: %v", err))
+	}
+	raw, err := doHTTPRequest(ctx, http.MethodPost, c.apiURL+"/command", payload)
+	if err != nil {
+		return err
+	}
+	return decodeEnvelope(raw, out)
+}
+
+// decodeEnvelope unwraps the standard afi-rpc response envelope
+// ({status, data, time}): on a non-success status it returns the error message,
+// otherwise it unmarshals the `data` field into out (a no-op when out is nil or
+// data is empty).
+func decodeEnvelope(raw []byte, out interface{}) error {
+	var env struct {
+		Status string          `json:"status"`
+		Data   json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return ErrQuote(fmt.Sprintf("decode envelope: %v", err))
+	}
+	if env.Status != "" && env.Status != "success" {
+		var msg string
+		_ = json.Unmarshal(env.Data, &msg)
+		if msg == "" {
+			msg = env.Status
+		}
+		return ErrQuote(msg)
+	}
+	if out == nil || len(env.Data) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(env.Data, out); err != nil {
+		return ErrQuote(fmt.Sprintf("decode data: %v", err))
+	}
+	return nil
+}
+
+// postForData POSTs req to url and decodes the response envelope's data into out.
+func postForData(ctx context.Context, url string, req, out interface{}) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return ErrQuote(fmt.Sprintf("marshal: %v", err))
+	}
+	raw, err := doHTTPRequest(ctx, http.MethodPost, url, payload)
+	if err != nil {
+		return err
+	}
+	return decodeEnvelope(raw, out)
+}
+
+// ───────────────── HTTP endpoint wrappers ─────────────────
+
+// ArbitrageRequest is the body of POST /arbitrage. Use raw fields (tokenIn,
+// tokenOut, amountIn, network) — the RPC service interprets the shape. For a
+// self-funded cycle set tokenIn == tokenOut.
+type ArbitrageRequest map[string]interface{}
+
+// FindArbitrage hits POST /arbitrage and returns the candidate routes, decoding
+// the service envelope ({status, data, time}). Each RouteQuote is an executable
+// single-DEX route — feed the most profitable one to QuoteFromRoute.
+func (c *Client) FindArbitrage(ctx context.Context, req ArbitrageRequest) ([]RouteQuote, error) {
+	var routes []RouteQuote
+	if err := postForData(ctx, c.apiURL+"/arbitrage", req, &routes); err != nil {
+		return nil, err
+	}
+	return routes, nil
+}
+
+// PathRequest is the body of POST /command action="path".
+type PathRequest map[string]interface{}
+
+// FindPath hits POST /command action="path" and returns the priced multi-hop
+// route for an explicit token path.
+func (c *Client) FindPath(ctx context.Context, req PathRequest) (*PathQuote, error) {
+	var resp PathQuote
+	if err := c.postCommand(ctx, "path", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RoutesRequest is the body of POST /command action="routes".
+type RoutesRequest map[string]interface{}
+
+// GetRoutes hits POST /command action="routes" and returns the candidate token
+// paths between tokenIn and tokenOut.
+func (c *Client) GetRoutes(ctx context.Context, req RoutesRequest) ([]Route, error) {
+	var routes []Route
+	if err := c.postCommand(ctx, "routes", req, &routes); err != nil {
+		return nil, err
+	}
+	return routes, nil
+}
+
+// LiquidationCandidatesRequest is the body of POST /aave.
+type LiquidationCandidatesRequest map[string]interface{}
+
+// GetLiquidationCandidates hits POST /aave and returns open Aave positions
+// eligible for liquidation.
+func (c *Client) GetLiquidationCandidates(ctx context.Context, req LiquidationCandidatesRequest) ([]AavePosition, error) {
+	var positions []AavePosition
+	if err := postForData(ctx, c.apiURL+"/aave", req, &positions); err != nil {
+		return nil, err
+	}
+	return positions, nil
+}
+
+// LiquidateRequest is the body of POST /liquidation-call.
+type LiquidateRequest map[string]interface{}
+
+// Liquidate hits POST /liquidation-call and returns the executable route that
+// repays the debt and swaps the seized collateral back.
+func (c *Client) Liquidate(ctx context.Context, req LiquidateRequest) (*LiquidationResult, error) {
+	var resp LiquidationResult
+	if err := postForData(ctx, c.apiURL+"/liquidation-call", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PriceQuoteRequest is the body of POST /command action="price".
+type PriceQuoteRequest map[string]interface{}
+
+// PriceQuote hits POST /command action="price" and returns the per-DEX quotes
+// for the pair (same shape as FindArbitrage).
+func (c *Client) PriceQuote(ctx context.Context, req PriceQuoteRequest) ([]RouteQuote, error) {
+	var quotes []RouteQuote
+	if err := c.postCommand(ctx, "price", req, &quotes); err != nil {
+		return nil, err
+	}
+	return quotes, nil
+}
+
+// DexQuoteRequest is the body of POST /command action=dex.
+type DexQuoteRequest map[string]interface{}
+
+// QuoteDex hits POST /command action=dex (e.g. "uniV3", "aerodrome") and returns
+// that DEX's quotes for the pair.
+func (c *Client) QuoteDex(ctx context.Context, dex string, req DexQuoteRequest) ([]RouteQuote, error) {
+	var quotes []RouteQuote
+	if err := c.postCommand(ctx, dex, req, &quotes); err != nil {
+		return nil, err
+	}
+	return quotes, nil
 }

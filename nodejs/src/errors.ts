@@ -40,9 +40,39 @@ export class InsufficientBalanceError extends AfiError {
 }
 
 export class QuoteError extends AfiError {
-  constructor(reason: string) {
-    super(`Quote failed: ${reason}`, "QUOTE_FAILED")
+  constructor(reason: string, code = "QUOTE_FAILED") {
+    super(`Quote failed: ${reason}`, code)
     this.name = "QuoteError"
+  }
+}
+
+/** 4xx response from the AFI API — typically a client-side input error. */
+export class BadRequestError extends QuoteError {
+  constructor(
+    reason: string,
+    public readonly status: number,
+  ) {
+    super(reason, "HTTP_BAD_REQUEST")
+    this.name = "BadRequestError"
+  }
+}
+
+/** 5xx response from the AFI API — upstream service is unhealthy. */
+export class ServerError extends QuoteError {
+  constructor(
+    reason: string,
+    public readonly status: number,
+  ) {
+    super(reason, "HTTP_SERVER_ERROR")
+    this.name = "ServerError"
+  }
+}
+
+/** `fetch` itself rejected — DNS/TCP/TLS-level failure before a response was seen. */
+export class NetworkError extends QuoteError {
+  constructor(reason: string) {
+    super(reason, "HTTP_NETWORK_ERROR")
+    this.name = "NetworkError"
   }
 }
 

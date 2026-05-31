@@ -105,3 +105,55 @@ func ErrSwapRevertedDecoded(reason string, decoded *DecodedRevert) error {
 func ErrNoSigner() error {
 	return newErr("NO_SIGNER", "private key required — create the client with PrivateKey set or call Connect()")
 }
+
+// ─── Typed HTTP errors ───────────────────────────────────────────────────────
+// Surfaced by the quoter / RPC service helpers so callers can branch on the
+// failure mode (client-side bug vs. server-side outage vs. transport hiccup).
+
+// BadRequestError is returned for 4xx responses (excluding 5xx). Treat as a
+// caller bug — the payload was rejected by the service.
+type BadRequestError struct {
+	Status int
+	Body   string
+}
+
+func (e *BadRequestError) Error() string {
+	return fmt.Sprintf("bad request (%d): %s", e.Status, e.Body)
+}
+
+// ServerError is returned for 5xx responses. Treat as transient — safe to retry
+// with backoff.
+type ServerError struct {
+	Status int
+	Body   string
+}
+
+func (e *ServerError) Error() string {
+	return fmt.Sprintf("server error (%d): %s", e.Status, e.Body)
+}
+
+// NetworkError wraps transport-level failures (dial / DNS / TLS / read).
+// The underlying error is preserved via Unwrap so callers can match on
+// `errors.Is` for context-cancelled etc.
+type NetworkError struct {
+	Err error
+}
+
+func (e *NetworkError) Error() string {
+	return fmt.Sprintf("network error: %v", e.Err)
+}
+
+func (e *NetworkError) Unwrap() error { return e.Err }
+
+// ErrInsufficientAllowance is returned by workflow prechecks when the user has
+// not approved the spender for at least `required` units of `token`.
+func ErrInsufficientAllowance(token, owner, spender string, allowance, required *big.Int) error {
+	return &AfiError{
+		Code:     "INSUFFICIENT_ALLOWANCE",
+		Message:  fmt.Sprintf("insufficient allowance for %s: have %s, need %s (owner=%s spender=%s)", token, allowance.String(), required.String(), owner, spender),
+		Token:    token,
+		Owner:    owner,
+		Balance:  allowance,
+		Required: required,
+	}
+}
