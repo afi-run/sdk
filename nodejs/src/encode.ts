@@ -35,6 +35,51 @@ export function encodeSwap(quote: Quote): EncodedTx {
 }
 
 /**
+ * Builds the AFI router calldata for `swapFor(user, tokenIn, amountIn, tokenOut, minOut, params)`.
+ * Operator-only on-chain — used by the AFI backend / managed bots to execute swaps
+ * on behalf of a user that already approved the router.
+ */
+export interface SwapForArgs {
+  user: Address
+  tokenIn: Address
+  amountInWei: bigint
+  tokenOut: Address
+  minOutWei: bigint
+  /** Encoded route steps (typically `quote.steps`). */
+  steps: Hex
+}
+
+export function encodeSwapFor(args: SwapForArgs): EncodedTx {
+  const data = encodeFunctionData({
+    abi: AFI_ABI,
+    functionName: "swapFor",
+    args: [args.user, args.tokenIn, args.amountInWei, args.tokenOut, args.minOutWei, args.steps],
+  })
+  return { to: AFI_ADDRESS, data, value: 0n }
+}
+
+/**
+ * Builds the AFI router calldata for `batchSwapFor(tuple[])`. Each entry mirrors
+ * `swapFor` and is executed sequentially on-chain.
+ */
+export function encodeBatchSwapFor(swaps: readonly SwapForArgs[]): EncodedTx {
+  const tuples = swaps.map((s) => ({
+    user: s.user,
+    tokenIn: s.tokenIn,
+    amountIn: s.amountInWei,
+    tokenOut: s.tokenOut,
+    minOut: s.minOutWei,
+    params: s.steps,
+  }))
+  const data = encodeFunctionData({
+    abi: AFI_ABI,
+    functionName: "batchSwapFor",
+    args: [tuples],
+  })
+  return { to: AFI_ADDRESS, data, value: 0n }
+}
+
+/**
  * Builds the ERC-20 `approve` calldata for the AFI router. Combine with
  * `encodeSwap` to issue both transactions through an external signer.
  */

@@ -62,8 +62,8 @@ func main() {
 		afi.WithSlippage(0.5),
 		afi.WithMaxHops(3),
 		afi.OnNetwork(afi.NetworkBase),
-		afi.WithPriceBase("USDC"),                       // adds TokenInBasePrice / TokenOutBasePrice
-		afi.WithDexs(afi.DexUniV3, afi.DexAerodrome),   // restrict to these DEXes
+		afi.WithPriceBase("USDC"),                    // adds TokenInBasePrice / TokenOutBasePrice
+		afi.WithDexs(afi.DexUniV3, afi.DexAerodrome), // restrict to these DEXes
 	)
 	if err != nil {
 		log.Fatal("get detailed quote:", err)

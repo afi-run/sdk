@@ -217,19 +217,19 @@ type Token struct {
 
 // Hop describes a single step in a multi-hop route returned by the quoter.
 type Hop struct {
-	TokenIn      common.Address
-	TokenOut     common.Address
-	AmountIn     string
-	AmountOut    string
-	MinOut       string
-	AmountInWei  *big.Int
-	AmountOutWei *big.Int
-	MinOutWei    *big.Int
+	TokenIn       common.Address
+	TokenOut      common.Address
+	AmountIn      string
+	AmountOut     string
+	MinOut        string
+	AmountInWei   *big.Int
+	AmountOutWei  *big.Int
+	MinOutWei     *big.Int
 	TokenInPrice  string
 	TokenOutPrice string
-	Slippage     float64
+	Slippage      float64
 	// Type is the pool protocol, e.g. "v3", "v2".
-	Type    string
+	Type string
 	// Kind is the routing engine, e.g. "cake".
 	Kind    string
 	RouteID int
@@ -238,11 +238,11 @@ type Hop struct {
 
 // Quote holds the result of a quoter request and the data needed for on-chain execution.
 type Quote struct {
-	TokenIn      common.Address
-	TokenOut     common.Address
-	AmountIn     string
-	AmountOut    string
-	MinOut       string
+	TokenIn   common.Address
+	TokenOut  common.Address
+	AmountIn  string
+	AmountOut string
+	MinOut    string
 	// AmountInWei is the exact amount to approve and pass to swap().
 	AmountInWei *big.Int
 	// AmountOutWei is the estimated output (informational).
@@ -289,10 +289,10 @@ func (q *Quote) IsStale(maxAgeSec int64) bool {
 
 // TokenInfo holds metadata + (optionally) balance/allowance for a token, fetched in one multicall.
 type TokenInfo struct {
-	Address   common.Address
-	Symbol    string
-	Name      string
-	Decimals  uint8
+	Address  common.Address
+	Symbol   string
+	Name     string
+	Decimals uint8
 	// Balance is the balance of Owner, when Owner was provided.
 	Balance *big.Int
 	// Allowance is the allowance granted by Owner to the AFI contract, when Owner was provided.
