@@ -1,5 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { fetchQuote, type QuoteRequest } from "../quoter.js"
+import {
+  fetchQuote,
+  findArbitrage,
+  findPath,
+  getLiquidationCandidates,
+  getRoutes,
+  liquidate,
+  priceQuote,
+  quoteDex,
+  quoteFromRoute,
+  routeProfit,
+  type QuoteRequest,
+  type RouteQuote,
+} from "../quoter.js"
+import { BadRequestError, NetworkError, QuoteError, ServerError } from "../errors.js"
 import { NETWORK, DEX } from "../types.js"
 
 const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" as const
@@ -245,5 +259,215 @@ describe("fetchQuote", () => {
     )
 
     await expect(fetchQuote(baseParams, 35, QUOTER_URL)).rejects.toThrow("insufficient liquidity")
+  })
+})
+
+// ─── New afi-rpc HTTP endpoints ──────────────────────────────────────────────
+
+const API = "https://rpc.afi.run"
+
+function mockSuccess(data: unknown): void {
+  vi.mocked(fetch).mockResolvedValue(
+    new Response(JSON.stringify({ status: "success", data }), { status: 200 }),
+  )
+}
+
+const sampleRoute: RouteQuote = {
+  network: "base",
+  tokenIn: USDC,
+  tokenOut: USDC,
+  amountIn: "1000",
+  amountInRaw: "1000000000",
+  amountOut: "1005",
+  amountOutRaw: "1005000000",
+  minOut: "1000",
+  minOutRaw: "1000000000",
+  routeId: 3,
+  stepData: "0xdeadbeef",
+}
+
+describe("routeProfit", () => {
+  it("returns amountOutRaw − amountInRaw", () => {
+    expect(routeProfit(sampleRoute)).toBe(5_000_000n)
+  })
+  it("returns null on unparseable amounts", () => {
+    expect(routeProfit({ ...sampleRoute, amountInRaw: "x" })).toBeNull()
+  })
+})
+
+describe("quoteFromRoute", () => {
+  it("hydrates an executable Quote from a route", () => {
+    const q = quoteFromRoute(sampleRoute)
+    expect(q.tokenIn).toBe(q.tokenOut) // cycle
+    expect(q.amountInWei).toBe(1_000_000_000n)
+    expect(q.minOutWei).toBe(1_000_000_000n)
+    expect(q.network).toBe("base")
+    // Steps = encodeSteps of the single hop: numSteps(1) + id(0003) + len(0004) + deadbeef
+    expect(q.steps).toBe("0x0100030004deadbeef")
+  })
+  it("honours minOutOverride", () => {
+    const q = quoteFromRoute(sampleRoute, 1_002_000_000n)
+    expect(q.minOutWei).toBe(1_002_000_000n)
+  })
+  it("rejects a routeId outside uint16 range", () => {
+    expect(() => quoteFromRoute({ ...sampleRoute, routeId: 70000 })).toThrow(/uint16/)
+  })
+})
+
+describe("findArbitrage", () => {
+  it("POSTs /arbitrage and returns route quotes", async () => {
+    mockSuccess([
+      {
+        network: "base", tokenIn: USDC, tokenOut: USDC,
+        amountIn: "1", amountInRaw: "1000000",
+        amountOut: "1.01", amountOutRaw: "1010000",
+        minOutRaw: "1000000", routeId: 3, stepData: "0xabcd",
+      },
+    ])
+    const res = await findArbitrage(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" })
+    expect(res).toHaveLength(1)
+    expect(res[0].routeId).toBe(3)
+    const [url, opts] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(`${API}/arbitrage`)
+    const body = JSON.parse(opts.body as string)
+    expect(body.tokenIn).toBe(USDC)
+  })
+
+  it("throws on HTTP 500", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("", { status: 500 }))
+    await expect(
+      findArbitrage(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" }),
+    ).rejects.toThrow("HTTP 500")
+  })
+})
+
+describe("findPath", () => {
+  it("POSTs /command with action=path and returns a priced route", async () => {
+    mockSuccess({
+      network: "base", path: [USDC, WETH], tokenIn: USDC, tokenOut: WETH,
+      amountIn: "1", amountInRaw: "1000000", amountOut: "0.0005", amountOutRaw: "500000000000000",
+      minOut: "0.0004", minOutRaw: "400000000000000", steps: "0xbeef", hops: [],
+    })
+    const res = await findPath(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: WETH })
+    expect(res.path).toEqual([USDC, WETH])
+    expect(res.steps).toBe("0xbeef")
+    const [url, opts] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(`${API}/command`)
+    expect(JSON.parse(opts.body as string).action).toBe("path")
+  })
+})
+
+describe("getRoutes", () => {
+  it("POSTs /command with action=routes and returns token paths", async () => {
+    mockSuccess([{ path: [USDC, WETH] }, { path: [USDC, WETH, USDC] }])
+    const res = await getRoutes(API, { network: NETWORK.BASE })
+    expect(res).toHaveLength(2)
+    expect(res[0].path).toEqual([USDC, WETH])
+    const [, opts] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(opts.body as string).action).toBe("routes")
+  })
+})
+
+describe("priceQuote", () => {
+  it("POSTs /command with action=price and returns route quotes", async () => {
+    mockSuccess([
+      { network: "base", tokenIn: USDC, tokenOut: WETH, amountIn: "1", amountInRaw: "1000000", amountOut: "0.0005", amountOutRaw: "500000000000000", minOutRaw: "0", routeId: 3, stepData: "0x" },
+    ])
+    const res = await priceQuote(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: WETH, amountIn: "1" })
+    expect(res[0].routeId).toBe(3)
+    const [, opts] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(opts.body as string).action).toBe("price")
+  })
+})
+
+describe("quoteDex", () => {
+  it.each(["uniV3", "cakeV3", "uniV4", "aerodrome", "balancer", "fluid", "curve128", "curve256"] as const)(
+    "POSTs /command with action=%s",
+    async (dex) => {
+      mockSuccess([{ network: "base", tokenIn: USDC, tokenOut: WETH, amountIn: "1", amountInRaw: "1000000", amountOut: "1", amountOutRaw: "1000000", minOutRaw: "0", routeId: 3, stepData: "0x" }])
+      const res = await quoteDex(API, dex, {
+        network: NETWORK.BASE,
+        tokenIn: USDC,
+        tokenOut: WETH,
+        amountIn: "1",
+      })
+      expect(res[0].routeId).toBe(3)
+      const [, opts] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+      expect(JSON.parse(opts.body as string).action).toBe(dex)
+    },
+  )
+})
+
+describe("getLiquidationCandidates", () => {
+  it("POSTs /aave and returns Aave positions", async () => {
+    mockSuccess([{ user: USDC, debtToken: "USDC", debtAmount: "500", collaterals: [{ token: "WETH", balance: "1.5" }] }])
+    const list = await getLiquidationCandidates(API, { network: NETWORK.BASE })
+    expect(list).toHaveLength(1)
+    expect(list[0].collaterals).toHaveLength(1)
+    const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(`${API}/aave`)
+  })
+})
+
+describe("liquidate", () => {
+  it("POSTs /liquidation-call and returns a repay+swap route", async () => {
+    mockSuccess({
+      tokenIn: USDC, tokenOut: WETH, amountIn: "1", amountOut: "1.05",
+      profit: "0.05", steps: "0xbeef",
+      hops: [{ routeId: 10, kind: "aave" }, { routeId: 3, kind: "uni" }],
+    })
+    const res = await liquidate(API, {
+      network: NETWORK.BASE, pool: USDC, user: USDC,
+      tokenIn: USDC, tokenOut: WETH, amountIn: "1",
+    })
+    expect(res.profit).toBe("0.05")
+    expect(res.hops).toHaveLength(2)
+    const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(`${API}/liquidation-call`)
+  })
+})
+
+describe("typed HTTP errors", () => {
+  it("fetchQuote throws BadRequestError on 4xx", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("", { status: 400 }))
+    const p = fetchQuote(baseParams, 35, QUOTER_URL)
+    await expect(p).rejects.toBeInstanceOf(BadRequestError)
+    // Also catchable as the base class.
+    await expect(p).rejects.toBeInstanceOf(QuoteError)
+  })
+
+  it("fetchQuote throws ServerError on 5xx", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("", { status: 500 }))
+    const p = fetchQuote(baseParams, 35, QUOTER_URL)
+    await expect(p).rejects.toBeInstanceOf(ServerError)
+    await expect(p).rejects.toBeInstanceOf(QuoteError)
+  })
+
+  it("fetchQuote throws NetworkError on fetch rejection", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("ECONNREFUSED"))
+    const p = fetchQuote(baseParams, 35, QUOTER_URL)
+    await expect(p).rejects.toBeInstanceOf(NetworkError)
+    await expect(p).rejects.toBeInstanceOf(QuoteError)
+  })
+
+  it("postJson-style endpoint throws BadRequestError on 4xx", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("", { status: 404 }))
+    await expect(
+      findArbitrage(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" }),
+    ).rejects.toBeInstanceOf(BadRequestError)
+  })
+
+  it("postJson-style endpoint throws ServerError on 5xx", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("", { status: 503 }))
+    await expect(
+      findArbitrage(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" }),
+    ).rejects.toBeInstanceOf(ServerError)
+  })
+
+  it("postJson-style endpoint throws NetworkError on fetch rejection", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("DNS fail"))
+    await expect(
+      findArbitrage(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" }),
+    ).rejects.toBeInstanceOf(NetworkError)
   })
 })

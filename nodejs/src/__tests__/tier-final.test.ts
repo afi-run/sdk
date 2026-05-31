@@ -159,9 +159,9 @@ describe("AfiClient — nonce management", () => {
     ;(client as any).pub.getTransactionCount = vi.fn().mockResolvedValue(100)
     await client.useManagedNonce()
 
-    const a = (client as any).allocateNonce()
-    const b = (client as any).allocateNonce()
-    const c = (client as any).allocateNonce(999) // explicit override wins
+    const a = await (client as any).allocateNonce()
+    const b = await (client as any).allocateNonce()
+    const c = await (client as any).allocateNonce(999) // explicit override wins
     expect(a).toBe(100)
     expect(b).toBe(101)
     expect(c).toBe(999)
@@ -173,6 +173,196 @@ describe("AfiClient — nonce management", () => {
     ;(client as any).pub.getTransactionCount = vi.fn().mockResolvedValue(10)
     await client.useManagedNonce()
     client.disableManagedNonce()
-    expect((client as any).allocateNonce()).toBeUndefined()
+    await expect((client as any).allocateNonce()).resolves.toBeUndefined()
+  })
+
+  it("serializes parallel allocations via a Promise queue (mutex)", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    // Simulate a slow getTransactionCount that resolves only after a tick —
+    // without the mutex, multiple callers would race past the fetch and reuse
+    // the same starting nonce.
+    let delayed: (() => void) | undefined
+    ;(client as any).pub.getTransactionCount = vi.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          delayed = () => resolve(50)
+        }),
+    )
+    // Trigger managed mode without pre-seeding the local counter, so the very
+    // first allocation has to fetch.
+    ;(client as any)._managedNonce = true
+    ;(client as any)._localNonce = null
+
+    const promises = Array.from({ length: 5 }, () => (client as any).allocateNonce() as Promise<number>)
+    // Yield so the first allocateNonce call actually invokes getTransactionCount.
+    await new Promise<void>((r) => setImmediate(r))
+    delayed!()
+    const nonces = await Promise.all(promises)
+    expect(nonces).toEqual([50, 51, 52, 53, 54])
+    // Only one fetch despite five parallel callers.
+    expect((client as any).pub.getTransactionCount).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("AfiClient — sendContractTx revert capture", () => {
+  it("falls back to pub.call to surface the revert reason", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+
+    ;(client as any).pub.estimateContractGas = vi.fn().mockRejectedValue(new Error("opaque RPC error"))
+    const callErr = Object.assign(new Error("execution reverted: insufficient liquidity"), {
+      shortMessage: "execution reverted: insufficient liquidity",
+    })
+    ;(client as any).pub.call = vi.fn().mockRejectedValue(callErr)
+
+    await expect(
+      client.sendContractTx(
+        "0x1111111111111111111111111111111111111111" as any,
+        [{ type: "function", name: "pause", inputs: [], outputs: [], stateMutability: "nonpayable" }] as const,
+        "pause",
+        [],
+      ),
+    ).rejects.toThrow(/pause would revert: execution reverted: insufficient liquidity/)
+  })
+
+  it("rethrows original estimate error when pub.call does not revert", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+
+    ;(client as any).pub.estimateContractGas = vi.fn().mockRejectedValue(new Error("flaky estimate"))
+    ;(client as any).pub.call = vi.fn().mockResolvedValue({ data: "0x" })
+
+    await expect(
+      client.sendContractTx(
+        "0x1111111111111111111111111111111111111111" as any,
+        [{ type: "function", name: "pause", inputs: [], outputs: [], stateMutability: "nonpayable" }] as const,
+        "pause",
+        [],
+      ),
+    ).rejects.toThrow(/estimateContractGas\(pause\): flaky estimate/)
+  })
+})
+
+describe("AfiClient — swapFor precheck", () => {
+  const USER  = "0x2222222222222222222222222222222222222222" as const
+  const TOKEN = "0x3333333333333333333333333333333333333333" as const
+
+  it("throws ApprovalError when allowance is below amountIn", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    ;(client as any).pub.readContract = vi.fn().mockResolvedValue(100n) // allowance
+    await expect(
+      client.swapFor({
+        user: USER,
+        tokenIn: TOKEN,
+        tokenOut: TOKEN,
+        amountIn: 1_000n,
+        minOut: 0n,
+        steps: "0x",
+      }),
+    ).rejects.toMatchObject({ code: "APPROVAL_FAILED" })
+  })
+
+  it("proceeds when allowance is sufficient", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    ;(client as any).pub.readContract = vi.fn().mockResolvedValue(10_000n)
+    ;(client as any).pub.estimateContractGas = vi.fn().mockResolvedValue(50_000n)
+    const writeSpy = vi.fn().mockResolvedValue("0xswapfor")
+    ;(client as any).wallet = { writeContract: writeSpy }
+    ;(client as any).pub.waitForTransactionReceipt = vi.fn().mockResolvedValue({ blockNumber: 1n, gasUsed: 0n })
+
+    await client.swapFor({
+      user: USER,
+      tokenIn: TOKEN,
+      tokenOut: TOKEN,
+      amountIn: 1_000n,
+      minOut: 0n,
+      steps: "0x",
+    })
+    expect(writeSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("skips allowance read when precheck=false", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    const readSpy = vi.fn().mockResolvedValue(0n)
+    ;(client as any).pub.readContract = readSpy
+    ;(client as any).pub.estimateContractGas = vi.fn().mockResolvedValue(50_000n)
+    ;(client as any).wallet = { writeContract: vi.fn().mockResolvedValue("0xswapfor") }
+    ;(client as any).pub.waitForTransactionReceipt = vi.fn().mockResolvedValue({ blockNumber: 1n, gasUsed: 0n })
+
+    await client.swapFor({
+      user: USER,
+      tokenIn: TOKEN,
+      tokenOut: TOKEN,
+      amountIn: 1_000n,
+      minOut: 0n,
+      steps: "0x",
+      precheck: false,
+    })
+    expect(readSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("AfiClient — sweepNMRProfit balance validation", () => {
+  const ASSET = "0x4444444444444444444444444444444444444444" as const
+
+  it("throws InsufficientBalanceError when amount > balance", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    // balanceOf(NMR) returns 100
+    ;(client as any).pub.readContract = vi.fn().mockResolvedValue(100n)
+    await expect(
+      client.sweepNMRProfit({ asset: ASSET, amount: 1_000n }),
+    ).rejects.toMatchObject({ code: "INSUFFICIENT_BALANCE" })
+  })
+
+  it("proceeds when balance >= amount", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    ;(client as any).pub.readContract = vi.fn().mockResolvedValue(10_000n)
+    ;(client as any).pub.estimateContractGas = vi.fn().mockResolvedValue(50_000n)
+    const writeSpy = vi.fn().mockResolvedValue("0xsweep")
+    ;(client as any).wallet = { writeContract: writeSpy }
+    ;(client as any).pub.waitForTransactionReceipt = vi.fn().mockResolvedValue({ blockNumber: 1n, gasUsed: 0n })
+
+    await client.sweepNMRProfit({ asset: ASSET, amount: 100n })
+    expect(writeSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("AfiClient — acceptOwnership", () => {
+  const C1 = "0x1111111111111111111111111111111111111111" as const
+  const C2 = "0x2222222222222222222222222222222222222222" as const
+
+  it("encodes acceptOwnership and forwards to sendContractTx", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    ;(client as any).pub.estimateContractGas = vi.fn().mockResolvedValue(40_000n)
+    const writeSpy = vi.fn().mockResolvedValue("0xaccept")
+    ;(client as any).wallet = { writeContract: writeSpy }
+    ;(client as any).pub.waitForTransactionReceipt = vi.fn().mockResolvedValue({ blockNumber: 1n, gasUsed: 0n })
+
+    await client.acceptOwnership(C1)
+    expect(writeSpy).toHaveBeenCalledTimes(1)
+    expect(writeSpy.mock.calls[0][0].functionName).toBe("acceptOwnership")
+    expect(writeSpy.mock.calls[0][0].address).toBe(C1)
+  })
+
+  it("acceptOwnershipBatch processes contracts sequentially", async () => {
+    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
+    client.connect(PK)
+    ;(client as any).pub.estimateContractGas = vi.fn().mockResolvedValue(40_000n)
+    const writeSpy = vi.fn().mockResolvedValue("0xaccept")
+    ;(client as any).wallet = { writeContract: writeSpy }
+    ;(client as any).pub.waitForTransactionReceipt = vi.fn().mockResolvedValue({ blockNumber: 1n, gasUsed: 0n })
+
+    const receipts = await client.acceptOwnershipBatch([C1, C2])
+    expect(receipts).toHaveLength(2)
+    expect(writeSpy).toHaveBeenCalledTimes(2)
+    expect(writeSpy.mock.calls[0][0].address).toBe(C1)
+    expect(writeSpy.mock.calls[1][0].address).toBe(C2)
   })
 })

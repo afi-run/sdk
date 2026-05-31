@@ -26,6 +26,29 @@ revert decoding or event parsing.
 
 ---
 
+## What do you want to do?
+
+A quick map from your role to the entrypoint you want. Every entry on the right
+links to a section of this document; the encoders ship today, the higher-level
+`client.*` wrappers are sugar on top of them.
+
+| Role | Goal | Use |
+|---|---|---|
+| End user | Swap your own tokens | `client.swap()` or `client.quote().execute()` |
+| Operator | Swap for 1 pre-approved user | `client.swapFor({ user, tokenIn, tokenOut, amountIn })` |
+| Operator | Batch swap for many users | `client.batchSwapFor([{ user, ... }, ...])` |
+| Operator (arb) | Flash-loan arbitrage cycle | `client.executeNMRArbitrage({ asset, amount, params })` |
+| Operator | User-funded arb (NMR.loan) | `client.nmrLoanArbitrage({ user, asset, amount, ... })` |
+| Operator | Withdraw NMR profit | `client.sweepNMRProfit({ asset, amount })` |
+| Owner | Pause / unpause router | `client.adminPause()` / `client.adminUnpause()` |
+| Owner | Change global fee | `client.adminSetFeeBps(bps)` |
+| Owner | Per-user fee override | `client.adminSetUserFeeBps(user, bps)` |
+| Owner | Add validation rule | `client.adminAddRule(rule)` |
+| Inspector | Pre-flight check | `client.verifyDeployment(chainId)` |
+| Indexer | Parse events | `parseSwapExecuted(logs)`, `parseFlashLoanExecuted(logs)`, ... |
+
+---
+
 ## Table of contents
 
 - [Requirements](#requirements)
@@ -44,6 +67,12 @@ revert decoding or event parsing.
 - [Error handling](#error-handling)
 - [Security model](#security-model)
 - [Recipes](#recipes)
+- [Operator workflows](#operator-workflows)
+- [Admin / governance](#admin--governance)
+- [Event indexing](#event-indexing)
+- [Per-DEX step builders](#per-dex-step-builders)
+- [HTTP quoter endpoints](#http-quoter-endpoints)
+- [Migration guide](#migration-guide)
 - [Networks & constants](#networks--constants)
 - [Examples directory](#examples-directory)
 - [Development](#development)
@@ -1345,20 +1374,54 @@ import { DEX } from "@afi-run/sdk"
 // afi.DexBalancer · afi.DexCurve128 · afi.DexCurve256 · afi.DexFluid
 ```
 
-### Contract constants
+### Deployed contracts per chain
+
+Deployed 2026-05-30. All contracts verified on the respective block explorer.
+
+**Afi (user swap router)** — `AFI_ADDRESSES` (TS) / `afi.AfiAddresses` (Go):
+
+| Chain | Address |
+|---|---|
+| Ethereum (1) | `0xc578a4e89795803F396160610F4990c44abA8dAb` |
+| BSC (56) | `0xFd4F8822f13D01aB142Bc985Ce587E35d7673C6e` |
+| Unichain (130) | `0xFd4F8822f13D01aB142Bc985Ce587E35d7673C6e` |
+| Base (8453) | `0xFd4F8822f13D01aB142Bc985Ce587E35d7673C6e` |
+| Arbitrum (42161) | `0xd74F60BD38243d089e286E3B6b9348f43a2314dF` |
+
+**RouteQuoter (off-chain simulation via `eth_call` + `state_override`)** — `ROUTE_QUOTER_ADDRESSES` (TS) / `afi.RouteQuoterAddresses` (Go):
+
+| Chain | Address |
+|---|---|
+| Ethereum | `0x5e41b417E9742DB9c5402F8B1969a33891628Bed` |
+| BSC | `0xcA37E05a20E93fD88E5367F9d7d1422937c57A38` |
+| Unichain | `0x2Cc852Cd57CC1b57CA09dbA7f69F0e225008cEBE` |
+| Base | `0xB5637138Cee6e757B679FFF8aDEA8DBa3E7544bB` |
+| Arbitrum | `0xBdD42B4fF06aCa8908D5E5d4826fFf5cdaC43895` |
+
+**NMR (NathanMayerRothschild — flash-loan arbitrage)** — `NMR_ADDRESSES` (TS) / `afi.NMRAddresses` (Go). Only deployed on Aave V3 chains:
+
+| Chain | Address |
+|---|---|
+| Ethereum | `0x29EfbFC1534A9B7af02142A5D97454E24Dc51b3a` |
+| Base | `0xefA12ba0196FD5ec44AF2ecAddc17333dF5FA779` |
+| Arbitrum | `0x6b533D53ec93eC30963b38576Ed8330Ff346a723` |
+
+### Other constants
 
 | Name                | Value |
 |---------------------|-------|
-| AFI router (Base)   | `0xB8cC65321d169D55b93b4402D795701c6B308ce4` |
-| WETH (Base)         | `0x4200000000000000000000000000000000000006` |
 | Multicall3 (all)    | `0xcA11bde05977b3631167028862bE2a173976CA11` |
+| Permit2 (all)       | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
 | API base URL        | `https://rpc.afi.run` |
 | Default gas buffer  | `15` (%) |
 
 ```typescript
 import {
-  AFI_ADDRESS,
-  WETH,
+  AFI_ADDRESSES,           // Record<chainId, Address>
+  ROUTE_QUOTER_ADDRESSES,  // Record<chainId, Address>
+  NMR_ADDRESSES,           // Record<chainId, Address> (Eth, Base, Arb)
+  AFI_ABI,
+  NMR_ABI,
   MULTICALL3_ADDRESS,
   DEFAULT_GAS_BUFFER_PERCENT,
   NETWORK_CHAIN_IDS,
@@ -1366,12 +1429,490 @@ import {
 ```
 
 ```go
-afi.AfiAddress         // common.Address
-afi.WETH               // common.Address
-afi.Multicall3Address  // common.Address
+afi.AfiAddresses           // map[Network]common.Address
+afi.RouteQuoterAddresses   // map[Network]common.Address
+afi.NMRAddresses           // map[Network]common.Address (Eth, Base, Arb)
+afi.AfiABI                 // string (JSON)
+afi.NMRABI                 // string (JSON)
+afi.Multicall3Address      // common.Address
 afi.DefaultGasBufferPercent
-afi.NetworkChainIDs    // map[Network]int64
+afi.NetworkChainIDs        // map[Network]int64
 ```
+
+### Low-level helpers
+
+For users building operator or arbitrage flows directly (not via the high-level
+`client.swap()` path).
+
+**Tight-format step encoder** — produces the bytes consumed by `Lib.runRoutes`:
+
+```typescript
+import { encodeSteps, type Step } from "@afi-run/sdk"
+
+const steps: Step[] = [
+  { id: 3, data: "0x...59-byte-stepData..." }, // UniV3 route id=3
+]
+const params = encodeSteps(steps) // -> Hex
+// Pass `params` as the last arg of Afi.swap / Afi.swapFor / NMR.requestOperation
+```
+
+```go
+import afi "github.com/afi-run/sdk/go"
+
+params, err := afi.EncodeSteps([]afi.Step{
+    {ID: 3, Data: stepData}, // UniV3
+})
+```
+
+Layout: `uint8 numSteps + [uint16 id | uint16 dataLen | bytes data] × N`.
+
+**NMR transaction encoders** — calldata builders for operator and owner actions:
+
+```typescript
+import {
+  encodeNMRRequestOperation,
+  encodeNMRSwap,
+  encodeNMRLoan,
+  encodeNMRSweepProfit,
+  encodeNMRSetTreasury,
+} from "@afi-run/sdk"
+```
+
+```go
+// Go SDK exposes the same surface:
+// afi.EncodeNMRRequestOperation, afi.EncodeNMRSwap, afi.EncodeNMRLoan,
+// afi.EncodeNMRSweepProfit, afi.EncodeNMRSetTreasury
+```
+
+| Function | Caller | Purpose |
+|---|---|---|
+| `requestOperation(asset, amount, params)` | operator | Triggers Aave flash loan; callback runs route chain |
+| `swap(asset, amount, minOut, params)` | operator | Arbitrage cycle — input asset == output asset |
+| `loan(user, asset, amount, minOut, params)` | operator | Pull from user, run route, return user share of profit |
+| `sweepProfit(asset, amount)` | operator | Withdraw accumulated NMR profit to `treasury` |
+| `setTreasury(addr)` | owner | Update profit destination |
+
+**When to use `swap` / `swapFor` / `batchSwapFor`**
+
+The Afi router exposes three execution entrypoints. Pick the one that matches who pays the gas and where the input tokens come from:
+
+| Function | Caller | Use case |
+|---|---|---|
+| `Afi.swap(tokenIn, amount, tokenOut, minOut, params)` | end-user (msg.sender pays) | DApp user swapping their own tokens |
+| `Afi.swapFor(user, tokenIn, amount, tokenOut, minOut, params)` | operator (operator pulls from `user`) | Bot executing on behalf of a pre-approved user |
+| `Afi.batchSwapFor(SwapRequest[])` | operator | Many users in one tx — gas-efficient batch |
+
+Important: `swapFor` and `batchSwapFor` require `user` to have called `IERC20(tokenIn).approve(Afi, amount)` first. Without that allowance, the operator's `transferFrom` will revert.
+
+**NMR — `swap` vs `loan` vs `requestOperation`**
+
+The NMR contract is operator-only, but it ships four distinct primitives. Pick by intent, not by name — `swap` here is **not** a directional trade:
+
+| Function | Caller | Distinct property |
+|---|---|---|
+| `NMR.requestOperation(asset, amount, params)` | operator | Triggers Aave flash loan; cycle profit accrues to NMR |
+| `NMR.swap(asset, amount, minOut, params)` | operator | **Arbitrage cycle — must have `tokenIn == tokenOut`** (cycle ends where it started). Reverts otherwise. |
+| `NMR.loan(user, asset, amount, minOut, params)` | operator | Pulls `amount` from `user` (requires `user.approve(NMR)`); runs route; returns `amount + userShare(profit)` to user; rest stays in NMR. |
+| `NMR.sweepProfit(asset, amount)` | operator | Withdraws accumulated profit from NMR to its configured `treasury`. |
+
+Warning: **`NMR.swap` REQUIRES `tokenIn == tokenOut`** — calling it with different tokens reverts with `OutputAssetMismatch`. For a directional trade on behalf of a user, use `NMR.loan` (or `Afi.swapFor` on the user router).
+
+**Admin / owner encoders**
+
+The SDK now exposes Afi owner-only encoders for dashboards and governance flows. Calldata builders only — broadcasting is the caller's responsibility:
+
+```typescript
+import {
+  encodeAfiPause, encodeAfiUnpause,
+  encodeAfiSetTreasury, encodeAfiSetFeeBps,
+  encodeAfiSetUserFeeBps, encodeAfiSetUserFeeBpsBatch,
+  encodeAfiClearUserFeeBps, encodeAfiResetAnyUserOverride,
+  encodeAfiAddRule, encodeAfiClearRules,
+  encodeAfiSetOperator, encodeAfiRescueTokens,
+} from "@afi-run/sdk"
+```
+
+```go
+// afi.EncodeAfiPause / EncodeAfiUnpause / EncodeAfiSetTreasury / EncodeAfiSetFeeBps /
+// EncodeAfiSetUserFeeBps / EncodeAfiSetUserFeeBpsBatch / EncodeAfiClearUserFeeBps /
+// EncodeAfiResetAnyUserOverride / EncodeAfiAddRule / EncodeAfiClearRules /
+// EncodeAfiSetOperator / EncodeAfiRescueTokens
+```
+
+The caller of these txs must be the Afi owner. Fee changes are bounded on-chain by `MAX_FEE_BPS = 50` (0.50%) — any value above that reverts with `FeeTooHigh`.
+
+**Event parsers**
+
+For indexers, dashboards, and post-tx UI updates, the SDK ships typed parsers for every event emitted by Afi and NMR. Each helper takes the receipt's `logs` and returns an array of decoded events (empty when no matching log is present):
+
+```typescript
+import {
+  parseSwapExecuted, parseFeeCollected, parseTreasuryUpdated,
+  parseFeeBpsUpdated, parseUserFeeBpsSet, parseUserFeeBpsCleared,
+  parseFlashLoanRequested, parseFlashLoanExecuted, parseFlashLoanFailed,
+  parseProfitSwept, parseProfitShareUpdated,
+} from "@afi-run/sdk"
+
+// Usage:
+const events = parseSwapExecuted(receipt.logs)
+// events: [{ from, assetIn, amountIn, assetOut, amountOut }, ...]
+```
+
+```go
+// Go SDK equivalents: afi.ParseSwapExecuted, afi.ParseFeeCollected,
+// afi.ParseTreasuryUpdated, afi.ParseFeeBpsUpdated, afi.ParseUserFeeBpsSet,
+// afi.ParseUserFeeBpsCleared, afi.ParseFlashLoanRequested,
+// afi.ParseFlashLoanExecuted, afi.ParseFlashLoanFailed,
+// afi.ParseProfitSwept, afi.ParseProfitShareUpdated
+```
+
+Use these to drive ledgers (`FeeCollected`, `ProfitSwept`), governance dashboards (`TreasuryUpdated`, `FeeBpsUpdated`, `ProfitShareUpdated`), per-user fee overrides (`UserFeeBpsSet` / `UserFeeBpsCleared`) and flash-loan telemetry (`FlashLoanRequested` / `Executed` / `Failed`).
+
+---
+
+## Operator workflows
+
+End-to-end snippets for the four operator surfaces of the protocol. They all
+share the same pattern: build the route via the quoter (or `encodeSteps`),
+sign with the operator key, broadcast.
+
+### Swap on behalf of one user — `swapFor`
+
+`Afi.swapFor` lets an operator execute a quote where the input tokens come from
+`user` (who must have `approve(Afi, amount)` first) and the output goes back to
+the same `user`. The operator pays gas — the user pays no native ETH.
+
+```typescript
+import { AfiClient, NETWORK } from "@afi-run/sdk"
+
+const client = new AfiClient({ rpcUrl: process.env.RPC_URL!, privateKey: process.env.OP_KEY! as `0x${string}` })
+
+const result = await client.swapFor({
+  user:     "0xUser...",
+  tokenIn:  USDC,
+  tokenOut: WETH,
+  amountIn: "1000",
+  slippage: 0.5,
+  network:  NETWORK.BASE,
+})
+console.log("Swapped for", result.user, "tx:", client.txUrl(result.txHash))
+```
+
+### Batch — `batchSwapFor`
+
+Execute up to ~N quotes in a single transaction. Gas-optimal when you have
+multiple pre-approved users to settle in the same block.
+
+```typescript
+const results = await client.batchSwapFor([
+  { user: "0xUserA...", tokenIn: USDC, tokenOut: WETH, amountIn: "500" },
+  { user: "0xUserB...", tokenIn: USDC, tokenOut: WETH, amountIn: "750" },
+  { user: "0xUserC...", tokenIn: DAI,  tokenOut: WETH, amountIn: "1000" },
+], { slippage: 0.5 })
+
+for (const r of results) console.log(r.user, "->", r.amountOut)
+```
+
+### Flash-loan arbitrage cycle — `executeNMRArbitrage`
+
+Triggers `NMR.requestOperation`, which borrows `amount` of `asset` from Aave,
+runs the route encoded in `params`, repays the loan + premium, and accrues the
+delta to NMR. The route must end on `asset` (cycle).
+
+```typescript
+import { encodeSteps } from "@afi-run/sdk"
+
+const params = encodeSteps([
+  { id: 3, data: stepUniV3 },     // USDC -> WETH on Uniswap V3
+  { id: 7, data: stepCurve },     // WETH -> USDC on Curve
+])
+
+const result = await client.executeNMRArbitrage({
+  asset:  USDC,
+  amount: 100_000n * 10n ** 6n,   // 100k USDC flash-borrowed
+  params,
+})
+console.log("profit:", result.profitWei, "wei")
+```
+
+### User-funded arbitrage — `nmrLoanArbitrage` (NMR.loan)
+
+Pulls `amount` from `user` (no flash loan), runs the cycle, returns
+`amount + userShare(profit)` to `user`. The NMR contract keeps the operator
+share.
+
+```typescript
+const result = await client.nmrLoanArbitrage({
+  user:   "0xUser...",
+  asset:  USDC,
+  amount: "5000",
+  minOut: "5000",                // floor for the cycle output
+  params,
+})
+console.log("returned to user:", result.userAmountOut, "operator share:", result.operatorShare)
+```
+
+### Withdraw NMR profit — `sweepNMRProfit`
+
+Moves accumulated profit out of NMR to the configured `treasury`. Operator-only.
+
+```typescript
+await client.sweepNMRProfit({ asset: USDC, amount: 10_000n * 10n ** 6n })
+```
+
+---
+
+## Admin / governance
+
+The Afi router is `Ownable` — these flows require the **owner key** (not just an
+operator). Read live state first, then craft and submit the tx.
+
+### Inspect current state
+
+```typescript
+const paused = await client.isPaused()
+const feeBps = await client.getFeeBps()
+const userFee = await client.getUserFeeBps("0xUser...")  // 0 if no override
+console.log({ paused, globalFeeBps: feeBps, userOverrideBps: userFee })
+```
+
+### Pause / unpause
+
+```typescript
+const tx = await client.adminPause()        // halts new swaps; existing pending tx still finish
+await tx.wait()
+// ...
+await (await client.adminUnpause()).wait()
+```
+
+### Change protocol fee
+
+Bounded on-chain by `MAX_FEE_BPS = 50` (0.50%). Values above revert with `FeeTooHigh`.
+
+```typescript
+await (await client.adminSetFeeBps(25)).wait()                 // 0.25% global fee
+await (await client.adminSetUserFeeBps("0xVIP...", 5)).wait()  // 0.05% for a single user
+await (await client.adminClearUserFeeBps("0xVIP...")).wait()   // remove the override
+```
+
+### Add a validation rule
+
+Rules are external contracts that implement `IAfiRule`. The router calls each
+registered rule before every swap; any revert aborts the swap.
+
+```typescript
+await (await client.adminAddRule("0xRule...")).wait()
+await (await client.adminClearRules()).wait()
+```
+
+The signing key for all `admin*` calls must equal the Afi owner address —
+otherwise `OwnableUnauthorizedAccount` is raised. The same applies to
+`adminSetTreasury`, `adminSetOperator(addr, true|false)` and
+`adminRescueTokens(token, amount, to)`.
+
+---
+
+## Event indexing
+
+Every event emitted by Afi and NMR has a typed parser that takes a `logs`
+array and returns decoded entries. Combine with `getLogs` to build indexers,
+dashboards, and post-tx ledgers.
+
+```typescript
+import {
+  parseSwapExecuted, parseFeeCollected,
+  parseFlashLoanRequested, parseFlashLoanExecuted, parseFlashLoanFailed,
+  parseProfitSwept, parseProfitShareUpdated,
+  parseTreasuryUpdated, parseFeeBpsUpdated,
+  parseUserFeeBpsSet, parseUserFeeBpsCleared,
+  AFI_ADDRESSES, NMR_ADDRESSES,
+} from "@afi-run/sdk"
+import { createPublicClient, http, parseAbiItem } from "viem"
+import { base } from "viem/chains"
+
+const publicClient = createPublicClient({ chain: base, transport: http(process.env.RPC_URL!) })
+
+// 1. Pull raw logs for the desired range
+const logs = await publicClient.getLogs({
+  address: [AFI_ADDRESSES[8453], NMR_ADDRESSES[8453]],
+  fromBlock: 22_000_000n,
+  toBlock:   22_005_000n,
+})
+
+// 2. Decode per event type
+const swaps         = parseSwapExecuted(logs)         // [{ from, assetIn, amountIn, assetOut, amountOut }]
+const fees          = parseFeeCollected(logs)         // protocol fee revenue
+const flashRequests = parseFlashLoanRequested(logs)
+const flashExecuted = parseFlashLoanExecuted(logs)    // includes profit per cycle
+const flashFailed   = parseFlashLoanFailed(logs)
+const profitSwept   = parseProfitSwept(logs)
+const profitShare   = parseProfitShareUpdated(logs)
+
+for (const s of swaps) console.log(`${s.from} ${s.amountIn} ${s.assetIn} -> ${s.amountOut} ${s.assetOut}`)
+```
+
+Each parser returns `[]` when no matching log is present, so you can chain
+them safely. Bigints come through as native `bigint`. The 11 parsers cover:
+
+| Parser | Origin | Use |
+|---|---|---|
+| `parseSwapExecuted` | Afi | Per-swap settlement |
+| `parseFeeCollected` | Afi | Protocol fee ledger |
+| `parseTreasuryUpdated` | Afi/NMR | Governance audit |
+| `parseFeeBpsUpdated` | Afi | Global fee change |
+| `parseUserFeeBpsSet` | Afi | Per-user override added |
+| `parseUserFeeBpsCleared` | Afi | Per-user override removed |
+| `parseFlashLoanRequested` | NMR | Loan issuance |
+| `parseFlashLoanExecuted` | NMR | Cycle profit |
+| `parseFlashLoanFailed` | NMR | Cycle revert |
+| `parseProfitSwept` | NMR | Treasury inflows |
+| `parseProfitShareUpdated` | NMR | Operator-share governance |
+
+---
+
+## Per-DEX step builders
+
+For operators who want to skip the HTTP quoter and assemble their own routes
+(custom MEV strategies, fully on-chain backtests, integration tests), the SDK
+exposes a builder per supported DEX. Each returns the 59-byte `stepData` plus
+the route ID expected by `Lib.runRoutes`.
+
+```typescript
+import {
+  buildUniV3Step, buildCakeV3Step, buildUniV4Step, buildAerodromeStep,
+  buildBalancerV3Step, buildFluidStep, buildCurve128Step, buildCurve256Step,
+  buildAaveLiquidatorStep,
+  encodeSteps,
+} from "@afi-run/sdk"
+```
+
+| Builder | Required fields |
+|---|---|
+| `buildUniV3Step({ tokenOut, fee, minOut, sqrtPriceLimitX96 })` | Uniswap V3 pools (fee tier `500/3000/10000`) |
+| `buildCakeV3Step({ tokenOut, fee, minOut, sqrtPriceLimitX96 })` | PancakeSwap V3 (same shape as Uni V3) |
+| `buildUniV4Step({ currency0, currency1, fee, tickSpacing, hooks, zeroForOne, minOut })` | Uniswap V4 PoolKey + direction |
+| `buildAerodromeStep({ pool, tokenOut, tickSpacing, minOut })` | Aerodrome Slipstream — note `tickSpacing` is **int24 signed** |
+| `buildBalancerV3Step({ pool, tokenOut, minOut })` | Balancer V3 (one-hop, exactIn) |
+| `buildFluidStep({ pool, swap0to1, tokenOut, minOut })` | Fluid DEX pools |
+| `buildCurve128Step({ i, j, minDy, pool, tokenOut })` | Curve plain pools with int128 indices |
+| `buildCurve256Step({ i, j, minDy, pool, tokenOut })` | Curve cryptoswap / meta with uint256 indices |
+| `buildAaveLiquidatorStep({ pool, user, collateralAsset })` | Aave V3 liquidation (special-purpose route) |
+
+### Example — multi-hop route fed directly into `client.swap()`
+
+```typescript
+const stepA = buildUniV3Step({
+  tokenOut: WETH,
+  fee: 500,
+  minOut: 0n,                 // intermediate hop — no floor
+  sqrtPriceLimitX96: 0n,
+})
+
+const stepB = buildCurve128Step({
+  i: 2, j: 0,
+  minDy: minOutFinalWei,      // floor on the final hop
+  pool: "0xCurvePool...",
+  tokenOut: USDC,
+})
+
+const params = encodeSteps([
+  { id: 3, data: stepA.data },   // 3 = UniV3
+  { id: 6, data: stepB.data },   // 6 = Curve128
+])
+
+const tx = await client.swap({
+  tokenIn:    USDC,
+  tokenOut:   USDC,             // cycle
+  amountInWei,
+  minOutWei:  minOutFinalWei,
+  params,
+})
+```
+
+Use this surface when the HTTP quoter is unavailable, when you want
+deterministic routes for replay tests, or when your strategy requires pool
+parameters the quoter does not expose.
+
+---
+
+## HTTP quoter endpoints
+
+The afi-rpc service ships several endpoints beyond `/quoter`. The client wraps
+each one with typed inputs and outputs so you can drop them into TS/Go code
+without writing fetch boilerplate.
+
+| Method | Endpoint | Returns | Purpose |
+|---|---|---|---|
+| `client.findArbitrage(req)` | `POST /arbitrage` | `RouteQuote[]` | Candidate routes for a cycle (set `tokenIn === tokenOut`) |
+| `client.findPath(req)` | `POST /command {action:"path"}` | `PathQuote` | Priced multi-hop route for an explicit path |
+| `client.getRoutes(req)` | `POST /command {action:"routes"}` | `Route[]` | Candidate token paths for a pair |
+| `client.priceQuote(req)` | `POST /command {action:"price"}` | `RouteQuote[]` | Per-DEX quotes for a pair |
+| `client.quoteDex(dex, req)` | `POST /command {action:<dex>}` | `RouteQuote[]` | Quotes from a single DEX |
+| `client.getLiquidationCandidates(req)` | `POST /aave` | `AavePosition[]` | Eligible Aave V3 positions to liquidate |
+| `client.liquidate(req)` | `POST /liquidation-call` | `LiquidationResult` | Repay+swap route for a liquidationCall |
+
+`findArbitrage`, `priceQuote`, and `quoteDex` all return `RouteQuote[]` — a list
+of executable single-DEX routes. Pick the best (`routeProfit(r)` =
+`amountOutRaw − amountInRaw`) and hydrate an executable `Quote` with
+`quoteFromRoute`, which wraps the route's `{routeId, stepData}` hop into the
+`Afi.swap` params via `encodeSteps`:
+
+```typescript
+import { quoteFromRoute, routeProfit } from "@afi-run/sdk"
+
+// Self-funded cycle: tokenIn === tokenOut, no operator needed.
+const routes = await client.findArbitrage({ network: "base", tokenIn: USDC, tokenOut: USDC, amountIn: "1000" })
+const best = routes.reduce((a, b) => (routeProfit(b)! > routeProfit(a)! ? b : a))
+
+// Floor output at principal so an unprofitable cycle reverts on-chain.
+const quote = quoteFromRoute(best, BigInt(best.amountInRaw))
+await client.executeSwap(quote)
+
+const candidates = await client.getLiquidationCandidates({ network: "base" })
+if (candidates.length > 0) {
+  console.log(candidates[0].user, candidates[0].debtAmount, candidates[0].collaterals)
+}
+```
+
+> Go mirrors this exactly: `client.FindArbitrage(ctx, req) → []RouteQuote`,
+> `afi.QuoteFromRoute(route, minOut)`, `client.ExecuteSwap(ctx, quote)`.
+
+All requests honour the same `rpcUrls` override (per-call) and surface
+`QuoteError` on validation failure — wrap them in `isQuoteError(e)` for clean
+UX messages.
+
+---
+
+## Migration guide
+
+The SDK exposed a single `AFI_ADDRESS` constant for Base. With the multi-chain
+rollout it now ships `AFI_ADDRESSES` (a `Record<chainId, Address>`); the old
+constant is removed.
+
+```typescript
+// Before
+import { AFI_ADDRESS } from "@afi-run/sdk"
+const router = AFI_ADDRESS
+
+// After
+import { AFI_ADDRESSES } from "@afi-run/sdk"
+const router = AFI_ADDRESSES[8453]              // Base
+const arbRouter = AFI_ADDRESSES[42161]          // Arbitrum
+```
+
+The same shape applies to `ROUTE_QUOTER_ADDRESSES` and `NMR_ADDRESSES`. Look up
+by chain ID — `client.chainId()` returns the value to key with at runtime.
+
+Other surfaces that landed alongside multi-chain:
+
+- **Admin encoders** — `encodeAfiPause`, `encodeAfiSetFeeBps`, `encodeAfiAddRule`, … in `afi-admin.ts`. Use them from a wallet connector when the owner key lives in a hardware/multisig wallet.
+- **NMR encoders** — `encodeNMRRequestOperation`, `encodeNMRSwap`, `encodeNMRLoan`, `encodeNMRSweepProfit`, `encodeNMRSetTreasury` in `nmr.ts`.
+- **Event parsers** — 13 typed parsers in `events.ts` (incl. `parseFlashLoanFailedWithData` and `parseNmrSwapExecuted`); see [Event indexing](#event-indexing).
+- **Step builders** — per-DEX `buildXxxStep(...)` helpers; see [Per-DEX step builders](#per-dex-step-builders).
+- **HTTP quoter endpoints** — `findArbitrage`, `findPath`, `getRoutes`, `getLiquidationCandidates`, `liquidate`, `priceQuote`, `quoteDex`.
+
+No existing methods changed signatures — `client.swap()`, `client.quote()`,
+`client.executeSwap()`, all helpers and all error types remain identical.
 
 ---
 
@@ -1384,11 +1925,21 @@ afi.NetworkChainIDs    // map[Network]int64
 | `examples/nodejs/3-execute-swap.ts`    | Quote → review → execute (recommended user flow) |
 | `examples/nodejs/4-full-flow.ts`       | One-call `.execute()` |
 | `examples/nodejs/5-approve-only.ts`    | Staged: tokenInfo → hasAllowance → approve → simulate → submit → wait |
+| `examples/nodejs/6-operator-batch.ts`  | `swapFor` + `batchSwapFor` for pre-approved users |
+| `examples/nodejs/7-nmr-arbitrage.ts`   | Flash-loan arbitrage cycle via `executeNMRArbitrage` |
+| `examples/nodejs/8-nmr-loan.ts`        | User-funded arbitrage via `nmrLoanArbitrage` |
+| `examples/nodejs/9-admin-governance.ts`| Pause, fee bps, rules — owner-only flows |
+| `examples/nodejs/10-event-indexer.ts`  | `getLogs` + all 11 event parsers |
 | `examples/go/list-tokens/`             | List active tokens |
 | `examples/go/get-quote/`               | Functional options |
 | `examples/go/execute-swap/`            | Quote → review → execute |
 | `examples/go/full-flow/`               | One-call `Swap()` |
 | `examples/go/approve-only/`            | Staged flow |
+| `examples/go/operator-batch/`          | `SwapFor` + `BatchSwapFor` |
+| `examples/go/nmr-arbitrage/`           | Flash-loan arbitrage cycle |
+| `examples/go/nmr-loan/`                | User-funded arbitrage |
+| `examples/go/admin-governance/`        | Owner-only flows |
+| `examples/go/event-indexer/`           | Event parsers |
 
 Run TS examples:
 
@@ -1402,6 +1953,15 @@ Run Go examples:
 ```bash
 cd examples/go && go mod tidy
 go run ./list-tokens
+```
+
+Or build every example into `bin/` (git-ignored) via the Makefile:
+
+```bash
+cd examples/go
+make build              # compiles each example into bin/<name>
+make run EX=get-quote   # or run one directly
+make list               # show discovered examples
 ```
 
 ---

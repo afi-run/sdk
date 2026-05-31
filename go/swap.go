@@ -66,16 +66,16 @@ func submitSwap(ctx context.Context, c *Client, afiABI abi.ABI, q *Quote, gasBuf
 			}
 			eff, feeWei, feeEth := feeFromReceipt(receipt)
 			return &SwapResult{
-				TxHash:      receipt.TxHash,
-				BlockNumber: receipt.BlockNumber.Uint64(),
-				AmountIn:    amountIn,
-				AmountOut:   amountOut,
-				TokenIn:     q.TokenIn,
-				TokenOut:    q.TokenOut,
-				GasUsed:     receipt.GasUsed,
+				TxHash:            receipt.TxHash,
+				BlockNumber:       receipt.BlockNumber.Uint64(),
+				AmountIn:          amountIn,
+				AmountOut:         amountOut,
+				TokenIn:           q.TokenIn,
+				TokenOut:          q.TokenOut,
+				GasUsed:           receipt.GasUsed,
 				EffectiveGasPrice: eff,
-				FeeWei:      feeWei,
-				FeeETH:      feeEth,
+				FeeWei:            feeWei,
+				FeeETH:            feeEth,
 			}, nil
 		},
 	}
@@ -163,12 +163,12 @@ func ParseSwapResult(receipt *types.Receipt) (*SwapResult, error) {
 			AmountIn:    amountIn,
 			AmountOut:   amountOut,
 			// Topics[1] = from (indexed), Topics[2] = assetIn, Topics[3] = assetOut
-			TokenIn:  common.HexToAddress(lg.Topics[2].Hex()),
-			TokenOut: common.HexToAddress(lg.Topics[3].Hex()),
-			GasUsed:  receipt.GasUsed,
+			TokenIn:           common.HexToAddress(lg.Topics[2].Hex()),
+			TokenOut:          common.HexToAddress(lg.Topics[3].Hex()),
+			GasUsed:           receipt.GasUsed,
 			EffectiveGasPrice: eff,
-			FeeWei:   feeWei,
-			FeeETH:   feeEth,
+			FeeWei:            feeWei,
+			FeeETH:            feeEth,
 		}, nil
 	}
 	return nil, nil

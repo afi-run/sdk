@@ -39,6 +39,21 @@ export async function getAllowance(
   })
 }
 
+/** Reads `allowance(owner, spender)` against an arbitrary spender. */
+export async function getAllowanceFor(
+  token: Address,
+  owner: Address,
+  spender: Address,
+  client: BasePublicClient,
+): Promise<bigint> {
+  return client.readContract({
+    address: token,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: [owner, spender],
+  })
+}
+
 export async function assertSufficientBalance(
   token: Address,
   owner: Address,

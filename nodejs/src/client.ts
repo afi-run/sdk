@@ -1,18 +1,86 @@
 import {
   createPublicClient,
   createWalletClient,
+  encodeFunctionData,
   http,
+  type Abi,
   type Account,
   type PublicClient,
   type Transport,
+  type TransactionReceipt,
   type WalletClient,
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { base } from "viem/chains"
-import { AFI_ABI, AFI_ADDRESS, API_BASE_URL, DEFAULT_GAS_BUFFER_PERCENT, NETWORK_CHAIN_IDS } from "./constants.js"
-import { ApprovalError, NoSignerError } from "./errors.js"
+import {
+  AFI_ABI,
+  AFI_ADDRESS,
+  AFI_ADDRESSES,
+  API_BASE_URL,
+  BASE_CHAIN_ID,
+  DEFAULT_GAS_BUFFER_PERCENT,
+  ERC20_ABI,
+  NETWORK_CHAIN_IDS,
+  NMR_ABI,
+  NMR_ADDRESSES,
+  OWNABLE2STEP_ABI,
+  ROUTE_REGISTRY_ABI,
+  TREASURY_OWNER,
+} from "./constants.js"
+import { ApprovalError, InsufficientBalanceError, NoSignerError } from "./errors.js"
 import { addressUrl, txUrl } from "./explorer.js"
-import { encodeApprove, encodeRevoke, encodeSwap, type EncodedTx } from "./encode.js"
+import {
+  encodeApprove,
+  encodeBatchSwapFor,
+  encodeRevoke,
+  encodeSwap,
+  encodeSwapFor,
+  type EncodedTx,
+  type SwapForArgs,
+} from "./encode.js"
+import {
+  encodeNMRLoan,
+  encodeNMRRequestOperation,
+  encodeNMRSweepProfit,
+  encodeNMRSwap,
+} from "./nmr.js"
+import {
+  encodeAfiAddRule,
+  encodeAfiClearRules,
+  encodeAfiClearUserFeeBps,
+  encodeAfiPause,
+  encodeAfiRescueTokens,
+  encodeAfiResetAnyUserOverride,
+  encodeAfiSetFeeBps,
+  encodeAfiSetOperator,
+  encodeAfiSetTreasury,
+  encodeAfiSetUserFeeBps,
+  encodeAfiSetUserFeeBpsBatch,
+  encodeAfiUnpause,
+} from "./afi-admin.js"
+import { ZERO_ADDRESS } from "./address.js"
+import {
+  findArbitrage,
+  findPath,
+  getLiquidationCandidates,
+  getRoutes,
+  liquidate,
+  priceQuote,
+  quoteDex,
+  type ArbitrageRequest,
+  type RouteQuote,
+  type DexAction,
+  type DexQuoteRequest,
+  type LiquidateRequest,
+  type LiquidationResult,
+  type AavePosition,
+  type LiquidationCandidatesRequest,
+  type PathRequest,
+  type PathQuote,
+  type PriceQuoteRequest,
+  type RoutesRequest,
+  type Route,
+} from "./quoter.js"
 import { fetchTokens } from "./info.js"
 import {
   fetchTokenInfo,
@@ -23,7 +91,7 @@ import {
   type TokenMetadata,
 } from "./multicall.js"
 import { QuoteBuilder } from "./builder.js"
-import { assertSufficientBalance, ensureExactApproval, getAllowance, getBalance, submitApproval, writeApprove } from "./token.js"
+import { assertSufficientBalance, ensureExactApproval, getAllowance, getAllowanceFor, getBalance, submitApproval, writeApprove } from "./token.js"
 import { feeFromReceipt, simulateSwap, submitSwap as sendSwap } from "./swap.js"
 import { isSimulationFailedError } from "./errors.js"
 import type {
@@ -67,6 +135,7 @@ export class AfiClient {
   private _chainIdPromise: Promise<number> | undefined
   private _managedNonce = false
   private _localNonce: number | null = null
+  private _nonceLock: Promise<void> = Promise.resolve()
 
   constructor(config: AfiConfig) {
     this._rpcUrl  = config.rpcUrl
@@ -348,7 +417,7 @@ export class AfiClient {
   async approve(tokenIn: Address, amountWei: bigint, opts?: { nonce?: number }): Promise<PendingTx | null> {
     return this.logged("approve", async () => {
       const { account, wallet } = this.requireSigner()
-      const nonce = this.allocateNonce(opts?.nonce)
+      const nonce = await this.allocateNonce(opts?.nonce)
       return submitApproval(tokenIn, account.address, amountWei, this.pub, wallet, this._gasBufferPercent, nonce)
     })
   }
@@ -363,7 +432,7 @@ export class AfiClient {
       const current = await getAllowance(token, account.address, this.pub)
       if (current === 0n) return null
 
-      const nonce = this.allocateNonce(opts?.nonce)
+      const nonce = await this.allocateNonce(opts?.nonce)
       let hash: Hex
       try {
         hash = await writeApprove(token, AFI_ADDRESS, 0n, this.pub, wallet, account.address, this._gasBufferPercent, nonce)
@@ -430,7 +499,7 @@ export class AfiClient {
   async submitSwap(quote: Quote, opts?: { nonce?: number }): Promise<PendingSwap> {
     return this.logged("submitSwap", async () => {
       const { account, wallet } = this.requireSigner()
-      const nonce = this.allocateNonce(opts?.nonce)
+      const nonce = await this.allocateNonce(opts?.nonce)
       return sendSwap(quote, account.address, this.pub, wallet, this._gasBufferPercent, nonce)
     })
   }
@@ -455,7 +524,7 @@ export class AfiClient {
         this._gasBufferPercent,
       )
       await simulateSwap(quote, account.address, this.pub)
-      const nonce = this.allocateNonce(opts?.nonce)
+      const nonce = await this.allocateNonce(opts?.nonce)
       const pending = await sendSwap(quote, account.address, this.pub, wallet, this._gasBufferPercent, nonce)
       return pending.wait({ confirmations: opts?.confirmations, timeoutMs: opts?.timeoutMs })
     })
@@ -555,13 +624,36 @@ export class AfiClient {
     this._localNonce = await this.getNonce()
   }
 
-  /** @internal — allocates the nonce for the next write tx. */
-  private allocateNonce(override?: number): number | undefined {
+  /**
+   * @internal — allocates the nonce for the next write tx.
+   *
+   * Serializes parallel allocations via a Promise queue so concurrent callers
+   * never receive the same nonce. When managed mode is off, the override path
+   * still returns synchronously through this awaitable wrapper.
+   */
+  private async allocateNonce(override?: number): Promise<number | undefined> {
     if (override !== undefined) return override
-    if (!this._managedNonce || this._localNonce === null) return undefined
-    const n = this._localNonce
-    this._localNonce = n + 1
-    return n
+    if (!this._managedNonce) return undefined
+
+    let release!: () => void
+    const next = new Promise<void>((resolve) => { release = resolve })
+    const prev = this._nonceLock
+    this._nonceLock = next
+    await prev
+    try {
+      if (this._localNonce === null) {
+        const { account } = this.requireSigner()
+        this._localNonce = await this.pub.getTransactionCount({
+          address: account.address,
+          blockTag: "pending",
+        })
+      }
+      const allocated = this._localNonce
+      this._localNonce = allocated + 1
+      return allocated
+    } finally {
+      release()
+    }
   }
 
   // ─── Tx introspection ────────────────────────────────────────────────────────
@@ -651,5 +743,572 @@ export class AfiClient {
       balance,
       allowance,
     }
+  }
+
+  // ─── Generic write helper ────────────────────────────────────────────────────
+
+  /**
+   * Generic write helper. Estimates gas, applies the SDK gas buffer, allocates
+   * the next managed nonce (when enabled), submits the tx and waits for
+   * `opts.confirmations` confirmations (default: 1).
+   *
+   * Throws NoSignerError when no signer is attached. Pre-encoded calls (`{to, data}`)
+   * should use the wallet client directly; this helper exists for typed contract calls.
+   */
+  async sendContractTx<TAbi extends Abi>(
+    to: Address,
+    abi: TAbi,
+    functionName: string,
+    args: readonly unknown[],
+    opts?: { value?: bigint; confirmations?: number; nonce?: number },
+  ): Promise<TransactionReceipt> {
+    const { account, wallet } = this.requireSigner()
+    let gas: bigint
+    try {
+      gas = await this.pub.estimateContractGas({
+        address: to,
+        abi: abi as Abi,
+        functionName,
+        args,
+        account: account.address,
+        ...(opts?.value !== undefined ? { value: opts.value } : {}),
+      } as Parameters<typeof this.pub.estimateContractGas>[0])
+    } catch (estErr) {
+      // Re-issue as eth_call so the RPC echoes the revert reason — the bare
+      // estimateContractGas message frequently strips the inner error.
+      try {
+        const data = encodeFunctionData({
+          abi: abi as Abi,
+          functionName,
+          args,
+        })
+        await this.pub.call({
+          account: account.address,
+          to,
+          data,
+          ...(opts?.value !== undefined ? { value: opts.value } : {}),
+        })
+      } catch (callErr) {
+        const shortMessage = (callErr as { shortMessage?: string }).shortMessage
+        const inner = shortMessage ?? (callErr as Error).message
+        throw new Error(`sendContractTx: ${functionName} would revert: ${inner}`)
+      }
+      // pub.call did not throw — surface the original estimate error.
+      throw new Error(`estimateContractGas(${functionName}): ${(estErr as Error).message}`)
+    }
+    const gasWithBuffer = (gas * BigInt(100 + Math.max(0, Math.floor(this._gasBufferPercent)))) / 100n
+    const nonce = await this.allocateNonce(opts?.nonce)
+    const hash = await wallet.writeContract({
+      address: to,
+      abi: abi as Abi,
+      functionName,
+      args,
+      gas: gasWithBuffer,
+      ...(opts?.value !== undefined ? { value: opts.value } : {}),
+      ...(nonce !== undefined ? { nonce } : {}),
+    } as Parameters<typeof wallet.writeContract>[0])
+    return this.pub.waitForTransactionReceipt({
+      hash,
+      confirmations: opts?.confirmations ?? 1,
+    })
+  }
+
+  // ─── Operator workflows ──────────────────────────────────────────────────────
+
+  /**
+   * Operator-only. Executes `swapFor(user, …)` on the AFI router. The user must
+   * have already approved the router for `amountIn` of `tokenIn`.
+   *
+   * When `precheck` is true (default), reads `ERC20(tokenIn).allowance(user, AFI)`
+   * off-chain and throws `ApprovalError` before submitting any tx if it is
+   * below `amountIn`. Pass `precheck: false` to skip the read.
+   */
+  async swapFor(args: {
+    user: Address
+    tokenIn: Address
+    tokenOut: Address
+    amountIn: bigint
+    minOut: bigint
+    steps: Hex
+    precheck?: boolean
+  }): Promise<TransactionReceipt> {
+    if (args.precheck !== false) {
+      const allowance = await getAllowanceFor(args.tokenIn, args.user, AFI_ADDRESS, this.pub)
+      if (allowance < args.amountIn) {
+        throw new ApprovalError(
+          `user ${args.user} allowance (${allowance.toString()}) on token ${args.tokenIn} ` +
+          `for AFI ${AFI_ADDRESS} is below amountIn (${args.amountIn.toString()})`,
+        )
+      }
+    }
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "swapFor", [
+      args.user,
+      args.tokenIn,
+      args.amountIn,
+      args.tokenOut,
+      args.minOut,
+      args.steps,
+    ])
+  }
+
+  /** Operator-only. Executes the AFI `batchSwapFor(tuple[])` entry point. */
+  async batchSwapFor(swaps: readonly SwapForArgs[]): Promise<TransactionReceipt> {
+    const tuples = swaps.map((s) => ({
+      user: s.user,
+      tokenIn: s.tokenIn,
+      amountIn: s.amountInWei,
+      tokenOut: s.tokenOut,
+      minOut: s.minOutWei,
+      params: s.steps,
+    }))
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "batchSwapFor", [tuples])
+  }
+
+  // ─── NMR workflows ───────────────────────────────────────────────────────────
+
+  /** Operator-only. Triggers an Aave V3 flash-loan and runs the encoded steps. */
+  async executeNMRArbitrage(args: {
+    asset: Address
+    amount: bigint
+    params: Hex
+    chainId?: number
+  }): Promise<TransactionReceipt> {
+    const nmr = this.requireNmrAddress(args.chainId)
+    return this.sendContractTx(nmr, NMR_ABI, "requestOperation", [args.asset, args.amount, args.params])
+  }
+
+  /** Operator-only. NMR `swap(asset, amount, minOut, params)` — single-tx cycle swap. */
+  async nmrCycleSwap(args: {
+    asset: Address
+    amount: bigint
+    minOut: bigint
+    params: Hex
+    chainId?: number
+  }): Promise<TransactionReceipt> {
+    const nmr = this.requireNmrAddress(args.chainId)
+    return this.sendContractTx(nmr, NMR_ABI, "swap", [args.asset, args.amount, args.minOut, args.params])
+  }
+
+  /**
+   * Operator-only. NMR `loan(user, asset, amount, minOut, params)` — pulls the
+   * user's tokens (the **user must pre-approve** NMR for `asset`/`amount` first),
+   * runs the route, then returns the swap output to the user.
+   *
+   * When `precheck` is true (default), reads `ERC20(asset).allowance(user, NMR)`
+   * off-chain and throws `ApprovalError` before submitting any tx if it is
+   * below `amount`. Pass `precheck: false` to skip the read.
+   */
+  async nmrLoanArbitrage(args: {
+    user: Address
+    asset: Address
+    amount: bigint
+    minOut: bigint
+    params: Hex
+    chainId?: number
+    precheck?: boolean
+  }): Promise<TransactionReceipt> {
+    const nmr = this.requireNmrAddress(args.chainId)
+    if (args.precheck !== false) {
+      const allowance = await getAllowanceFor(args.asset, args.user, nmr, this.pub)
+      if (allowance < args.amount) {
+        throw new ApprovalError(
+          `user ${args.user} allowance (${allowance.toString()}) on token ${args.asset} ` +
+          `for NMR ${nmr} is below amount (${args.amount.toString()})`,
+        )
+      }
+    }
+    return this.sendContractTx(nmr, NMR_ABI, "loan", [
+      args.user,
+      args.asset,
+      args.amount,
+      args.minOut,
+      args.params,
+    ])
+  }
+
+  /**
+   * Owner-only. Sweeps profit from NMR to the configured treasury.
+   *
+   * Reads `ERC20(asset).balanceOf(NMR)` first and throws
+   * `InsufficientBalanceError` if `amount` exceeds what the contract holds —
+   * surfaces an actionable error before paying gas for a guaranteed revert.
+   */
+  async sweepNMRProfit(args: { asset: Address; amount: bigint; chainId?: number }): Promise<TransactionReceipt> {
+    const nmr = this.requireNmrAddress(args.chainId)
+    const balance = await getBalance(args.asset, nmr, this.pub)
+    if (args.amount > balance) {
+      throw new InsufficientBalanceError(args.asset, balance, args.amount, nmr)
+    }
+    return this.sendContractTx(nmr, NMR_ABI, "sweepProfit", [args.asset, args.amount])
+  }
+
+  // ─── Admin (owner-only) ──────────────────────────────────────────────────────
+
+  /** Owner-only. `pause()` on the AFI router. */
+  async adminPause(): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "pause", [])
+  }
+
+  /** Owner-only. `unpause()` on the AFI router. */
+  async adminUnpause(): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "unpause", [])
+  }
+
+  /** Owner-only. `setTreasury(addr)` — `addr` cannot be the zero address. */
+  async adminSetTreasury(addr: Address): Promise<TransactionReceipt> {
+    if (addr.toLowerCase() === ZERO_ADDRESS) throw new Error("treasury cannot be the zero address")
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "setTreasury", [addr])
+  }
+
+  /** Owner-only. `setFeeBps(bps)` — `bps` must be in [0, 50]. */
+  async adminSetFeeBps(bps: number): Promise<TransactionReceipt> {
+    // Re-uses encodeAfiSetFeeBps's range check via a side call.
+    encodeAfiSetFeeBps(bps)
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "setFeeBps", [bps])
+  }
+
+  /** Owner-only. `setUserFeeBps(user, bps)` — `bps` must be in [0, 50]. */
+  async adminSetUserFeeBps(user: Address, bps: number): Promise<TransactionReceipt> {
+    encodeAfiSetUserFeeBps(user, bps)
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "setUserFeeBps", [user, bps])
+  }
+
+  /** Owner-only. `setUserFeeBpsBatch(users, bps)` — lengths must match. */
+  async adminSetUserFeeBpsBatch(users: Address[], bps: number[]): Promise<TransactionReceipt> {
+    encodeAfiSetUserFeeBpsBatch(users, bps)
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "setUserFeeBpsBatch", [users, bps])
+  }
+
+  /** Owner-only. `clearUserFeeBps(user)`. */
+  async adminClearUserFeeBps(user: Address): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "clearUserFeeBps", [user])
+  }
+
+  /** Owner-only. `resetAnyUserOverride()`. */
+  async adminResetAnyUserOverride(): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "resetAnyUserOverride", [])
+  }
+
+  /** Owner-only. `addRule(rule)` — rejects the zero address client-side. */
+  async adminAddRule(rule: Address): Promise<TransactionReceipt> {
+    if (rule.toLowerCase() === ZERO_ADDRESS) throw new Error("rule cannot be the zero address")
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "addRule", [rule])
+  }
+
+  /** Owner-only. `clearRules()`. */
+  async adminClearRules(): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "clearRules", [])
+  }
+
+  /** Owner-only. `setOperator(op, value)`. */
+  async adminSetOperator(op: Address, value: boolean): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "setOperator", [op, value])
+  }
+
+  /** Owner-only. `rescueTokens(token, value, to)`. */
+  async adminRescueTokens(token: Address, value: bigint, to: Address): Promise<TransactionReceipt> {
+    return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "rescueTokens", [token, value, to])
+  }
+
+  // ─── Ownable2Step handover ───────────────────────────────────────────────────
+
+  /**
+   * Calls `acceptOwnership()` on any Ownable2Step contract. The connected
+   * signer must already be the contract's `pendingOwner()` — otherwise the tx
+   * will revert with `OwnableUnauthorizedAccount`.
+   */
+  async acceptOwnership(
+    contractAddr: Address,
+    opts?: { confirmations?: number },
+  ): Promise<TransactionReceipt> {
+    return this.sendContractTx(contractAddr, OWNABLE2STEP_ABI, "acceptOwnership", [], opts)
+  }
+
+  /**
+   * Sequentially calls `acceptOwnership()` on every contract in `contracts`.
+   * Order is preserved and txs are submitted one-at-a-time (not via
+   * `Promise.all`) so the managed nonce stays deterministic on flaky RPCs.
+   */
+  async acceptOwnershipBatch(
+    contracts: Address[],
+    opts?: { confirmations?: number },
+  ): Promise<TransactionReceipt[]> {
+    const receipts: TransactionReceipt[] = []
+    for (const addr of contracts) {
+      receipts.push(await this.acceptOwnership(addr, opts))
+    }
+    return receipts
+  }
+
+  // ─── Read helpers ────────────────────────────────────────────────────────────
+
+  private afiAddress(chainId?: number): Address {
+    if (chainId === undefined) return AFI_ADDRESS
+    const a = AFI_ADDRESSES[chainId]
+    if (!a) throw new Error(`no AFI deployment for chainId=${chainId}`)
+    return a
+  }
+
+  private requireNmrAddress(chainId?: number): Address {
+    const id = chainId ?? BASE_CHAIN_ID
+    const a = NMR_ADDRESSES[id]
+    if (!a) throw new Error(`no NMR deployment for chainId=${id}`)
+    return a
+  }
+
+  /** Reads the AFI router pause flag. */
+  async isPaused(chainId?: number): Promise<boolean> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "paused",
+    })
+  }
+
+  /** Reads `feeBpsOf(user)` — falls back to the default fee when no override is set. */
+  async getFeeBpsOf(user: Address, chainId?: number): Promise<number> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "feeBpsOf",
+      args: [user],
+    })
+  }
+
+  /** Reads `hasRules()` — true when at least one rule contract is registered. */
+  async hasRules(chainId?: number): Promise<boolean> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "hasRules",
+    })
+  }
+
+  /** Reads the configured treasury address on the AFI router. */
+  async getTreasuryAddress(chainId?: number): Promise<Address> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "treasury",
+    })
+  }
+
+  /** Reads the immutable RouteRegistry the AFI router was deployed with. */
+  async getRegistryAddress(chainId?: number): Promise<Address> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "registry",
+    })
+  }
+
+  /** Reads the AFI router's primaryOperator slot. */
+  async getPrimaryOperator(chainId?: number): Promise<Address> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "primaryOperator",
+    })
+  }
+
+  /** Returns true when `addr` is set as an AFI operator (or matches primaryOperator). */
+  async isAfiOperator(addr: Address, chainId?: number): Promise<boolean> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "isOperator",
+      args: [addr],
+    })
+  }
+
+  /** Reads `Ownable2Step.owner()` on the AFI router. */
+  async getOwner(chainId?: number): Promise<Address> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "owner",
+    })
+  }
+
+  /** Reads `Ownable2Step.pendingOwner()` on the AFI router. */
+  async getPendingOwner(chainId?: number): Promise<Address> {
+    return this.pub.readContract({
+      address: this.afiAddress(chainId),
+      abi: AFI_ABI,
+      functionName: "pendingOwner",
+    })
+  }
+
+  /** Reads `treasury()` on NMR (Nathan). */
+  async getNMRTreasury(chainId?: number): Promise<Address> {
+    return this.pub.readContract({
+      address: this.requireNmrAddress(chainId),
+      abi: NMR_ABI,
+      functionName: "treasury",
+    })
+  }
+
+  /** Reads the `PROFIT_SHARE` constant on NMR (out of 100). */
+  async getNMRProfitShare(chainId?: number): Promise<number> {
+    const v = await this.pub.readContract({
+      address: this.requireNmrAddress(chainId),
+      abi: NMR_ABI,
+      functionName: "PROFIT_SHARE",
+    })
+    return Number(v)
+  }
+
+  /** Returns true when `addr` is an NMR operator. */
+  async isNMROperator(addr: Address, chainId?: number): Promise<boolean> {
+    return this.pub.readContract({
+      address: this.requireNmrAddress(chainId),
+      abi: NMR_ABI,
+      functionName: "isOperator",
+      args: [addr],
+    })
+  }
+
+  /** Looks up a single route in the RouteRegistry by uint16 ID. */
+  async getRoute(id: number, chainId?: number): Promise<Address> {
+    const registry = await this.getRegistryAddress(chainId)
+    return this.pub.readContract({
+      address: registry,
+      abi: ROUTE_REGISTRY_ABI,
+      functionName: "getRoute",
+      args: [id],
+    })
+  }
+
+  /**
+   * Lists all currently-registered routes (IDs 1..9 per DeployInfra) in a
+   * single multicall round-trip. Skips any that revert (route not registered).
+   */
+  async listRoutes(chainId?: number): Promise<Map<number, Address>> {
+    const registry = await this.getRegistryAddress(chainId)
+    const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    const results = await this.multicall(
+      ids.map((id) => ({
+        address: registry,
+        abi: ROUTE_REGISTRY_ABI,
+        functionName: "getRoute",
+        args: [id],
+      })),
+      { allowFailure: true },
+    )
+    const out = new Map<number, Address>()
+    results.forEach((r, idx) => {
+      if (r.status === "success") {
+        const addr = r.result as Address
+        if (addr && addr.toLowerCase() !== ZERO_ADDRESS) out.set(ids[idx], addr)
+      }
+    })
+    return out
+  }
+
+  /** ERC20.balanceOf on the AFI router's treasury for `token`. */
+  async getTreasuryBalance(token: Address, chainId?: number): Promise<bigint> {
+    const treasury = await this.getTreasuryAddress(chainId)
+    return this.pub.readContract({
+      address: token,
+      abi: ERC20_ABI,
+      functionName: "balanceOf",
+      args: [treasury],
+    })
+  }
+
+  /**
+   * Bundles deployment-health checks into a single multicall:
+   *
+   *   paused, treasury, registry, primaryOperator, owner, hasRules, pendingOwner
+   *
+   * Returns `{ ok, issues }`. `ok=false` when treasury/registry/primaryOperator
+   * is the zero address, paused is true, `pendingOwner` is set (handover not
+   * complete) or `treasury` differs from the `TREASURY_OWNER` constant.
+   */
+  async verifyDeployment(chainId?: number): Promise<{ ok: boolean; issues: string[] }> {
+    const afi = this.afiAddress(chainId)
+    const results = await this.multicall([
+      { address: afi, abi: AFI_ABI, functionName: "paused" },
+      { address: afi, abi: AFI_ABI, functionName: "treasury" },
+      { address: afi, abi: AFI_ABI, functionName: "registry" },
+      { address: afi, abi: AFI_ABI, functionName: "primaryOperator" },
+      { address: afi, abi: AFI_ABI, functionName: "owner" },
+      { address: afi, abi: AFI_ABI, functionName: "hasRules" },
+      { address: afi, abi: AFI_ABI, functionName: "pendingOwner" },
+    ], { allowFailure: true })
+
+    const issues: string[] = []
+    const need = (label: string, idx: number): unknown => {
+      const r = results[idx]
+      if (r.status !== "success") {
+        issues.push(`${label}() reverted: ${r.error.message}`)
+        return undefined
+      }
+      return r.result
+    }
+    const paused = need("paused", 0) as boolean | undefined
+    const treasury = need("treasury", 1) as Address | undefined
+    const registry = need("registry", 2) as Address | undefined
+    const primary = need("primaryOperator", 3) as Address | undefined
+    need("owner", 4)
+    need("hasRules", 5)
+    const pendingOwner = need("pendingOwner", 6) as Address | undefined
+
+    if (paused === true) issues.push("router is paused")
+    if (treasury && treasury.toLowerCase() === ZERO_ADDRESS) issues.push("treasury is zero address")
+    if (registry && registry.toLowerCase() === ZERO_ADDRESS) issues.push("registry is zero address")
+    if (primary && primary.toLowerCase() === ZERO_ADDRESS) issues.push("primaryOperator is zero address")
+    if (pendingOwner && pendingOwner.toLowerCase() !== ZERO_ADDRESS) {
+      issues.push(`ownership transfer pending: ${pendingOwner}`)
+    }
+    // Only flag a mismatch when TREASURY_OWNER is configured (non-zero).
+    if (
+      treasury &&
+      TREASURY_OWNER.toLowerCase() !== ZERO_ADDRESS &&
+      treasury.toLowerCase() !== TREASURY_OWNER.toLowerCase()
+    ) {
+      issues.push(`treasury mismatch: on-chain ${treasury} vs expected ${TREASURY_OWNER}`)
+    }
+
+    return { ok: issues.length === 0, issues }
+  }
+
+  // ─── afi-rpc HTTP endpoints ──────────────────────────────────────────────────
+
+  /** Posts `/arbitrage` and returns the candidate routes for `tokenIn`. */
+  async findArbitrage(req: ArbitrageRequest): Promise<RouteQuote[]> {
+    return this.logged("findArbitrage", () => findArbitrage(this._apiUrl, req), "api")
+  }
+
+  /** Posts `/command {action:"path"}` — priced multi-hop route for an explicit path. */
+  async findPath(req: PathRequest): Promise<PathQuote> {
+    return this.logged("findPath", () => findPath(this._apiUrl, req), "api")
+  }
+
+  /** Posts `/command {action:"routes"}` — candidate token paths for a pair. */
+  async getRoutes(req: RoutesRequest): Promise<Route[]> {
+    return this.logged("getRoutes", () => getRoutes(this._apiUrl, req), "api")
+  }
+
+  /** Posts `/aave` — current liquidation candidates on Aave V3 for `network`. */
+  async getLiquidationCandidates(
+    req: LiquidationCandidatesRequest,
+  ): Promise<AavePosition[]> {
+    return this.logged("getLiquidationCandidates", () => getLiquidationCandidates(this._apiUrl, req), "api")
+  }
+
+  /** Posts `/liquidation-call` — quotes a single liquidationCall for the given user. */
+  async liquidate(req: LiquidateRequest): Promise<LiquidationResult> {
+    return this.logged("liquidate", () => liquidate(this._apiUrl, req), "api")
+  }
+
+  /** Posts `/command {action:"price"}` — per-DEX quotes for the pair. */
+  async priceQuote(req: PriceQuoteRequest): Promise<RouteQuote[]> {
+    return this.logged("priceQuote", () => priceQuote(this._apiUrl, req), "api")
+  }
+
+  /** Posts `/command {action:<dex>}` — single-DEX quote helper. */
+  async quoteDex(dex: DexAction, req: DexQuoteRequest): Promise<RouteQuote[]> {
+    return this.logged(`quoteDex:${dex}`, () => quoteDex(this._apiUrl, dex, req), "api")
   }
 }

@@ -105,12 +105,12 @@ func TestSwapResult_MarshalJSON_RoundTrip(t *testing.T) {
 
 func TestTokenInfo_MarshalJSON_WithBalance(t *testing.T) {
 	info := &TokenInfo{
-		Address: common.HexToAddress("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"),
-		Symbol:  "USDC",
-		Name:    "USD Coin",
-		Decimals: 6,
-		Owner:    common.HexToAddress("0x1234567890123456789012345678901234567890"),
-		Balance:  big.NewInt(1_000_000),
+		Address:   common.HexToAddress("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"),
+		Symbol:    "USDC",
+		Name:      "USD Coin",
+		Decimals:  6,
+		Owner:     common.HexToAddress("0x1234567890123456789012345678901234567890"),
+		Balance:   big.NewInt(1_000_000),
 		Allowance: big.NewInt(500_000),
 	}
 	data, err := json.Marshal(info)
@@ -132,9 +132,9 @@ func TestTokenInfo_MarshalJSON_WithBalance(t *testing.T) {
 
 func TestTokenInfo_MetadataOnly(t *testing.T) {
 	info := &TokenInfo{
-		Address: common.HexToAddress("0xabc"),
-		Symbol:  "X",
-		Name:    "X",
+		Address:  common.HexToAddress("0xabc"),
+		Symbol:   "X",
+		Name:     "X",
 		Decimals: 18,
 	}
 	data, _ := json.Marshal(info)
