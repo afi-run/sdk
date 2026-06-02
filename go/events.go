@@ -28,7 +28,7 @@ type FeeCollectedEvent struct {
 	Raw    *types.Log
 }
 
-// TreasuryUpdatedEvent is emitted by Afi (and also by NMR — disambiguate by Raw.Address).
+// TreasuryUpdatedEvent is emitted by Afi.
 type TreasuryUpdatedEvent struct {
 	Treasury common.Address
 	Raw      *types.Log
@@ -51,66 +51,6 @@ type UserFeeBpsSetEvent struct {
 type UserFeeBpsClearedEvent struct {
 	User common.Address
 	Raw  *types.Log
-}
-
-// ---------- NMR events ----------
-
-// FlashLoanRequestedEvent is emitted by NMR before initiating an Aave flash loan.
-type FlashLoanRequestedEvent struct {
-	Asset  common.Address
-	Amount *big.Int
-	Raw    *types.Log
-}
-
-// FlashLoanExecutedEvent is emitted by NMR on a successful arbitrage cycle.
-type FlashLoanExecutedEvent struct {
-	Asset   common.Address
-	Amount  *big.Int
-	Premium *big.Int
-	Profit  *big.Int
-	Raw     *types.Log
-}
-
-// FlashLoanFailedEvent is emitted by NMR when the inner cycle reverts with a string reason.
-type FlashLoanFailedEvent struct {
-	Asset  common.Address
-	Amount *big.Int
-	Reason string
-	Raw    *types.Log
-}
-
-// FlashLoanFailedWithDataEvent is emitted by NMR when the inner cycle reverts
-// with low-level data (no decodable string reason).
-type FlashLoanFailedWithDataEvent struct {
-	Asset  common.Address
-	Amount *big.Int
-	Data   []byte
-	Raw    *types.Log
-}
-
-// NMRSwapExecutedEvent is emitted by NMR on a successful cycle swap (NMR.swap).
-// Note this is distinct from Afi's SwapExecuted (it carries no `from` field and
-// has a different topic0).
-type NMRSwapExecutedEvent struct {
-	AssetIn   common.Address
-	AmountIn  *big.Int
-	AssetOut  common.Address
-	AmountOut *big.Int
-	Raw       *types.Log
-}
-
-// ProfitSweptEvent is emitted by NMR when operator pulls profit to treasury.
-type ProfitSweptEvent struct {
-	Asset  common.Address
-	Amount *big.Int
-	To     common.Address
-	Raw    *types.Log
-}
-
-// ProfitShareUpdatedEvent is emitted by NMR when owner changes profit share split.
-type ProfitShareUpdatedEvent struct {
-	ProfitShare uint8
-	Raw         *types.Log
 }
 
 // ---------- internal helpers ----------
@@ -202,16 +142,9 @@ func ParseFeeCollected(logs []*types.Log) ([]FeeCollectedEvent, error) {
 }
 
 // ParseAfiTreasuryUpdated decodes Afi.TreasuryUpdated events. Use only on logs
-// known to be Afi-emitted (filter by log.Address). NMR emits an event with the
-// same name + same topic0, so do not pass mixed logs.
+// known to be Afi-emitted (filter by log.Address).
 func ParseAfiTreasuryUpdated(logs []*types.Log) ([]TreasuryUpdatedEvent, error) {
 	return parseTreasuryUpdated(afiParsedABI, logs)
-}
-
-// ParseNMRTreasuryUpdated decodes NMR.TreasuryUpdated events. Same caveat as
-// ParseAfiTreasuryUpdated — filter by emitter address before calling.
-func ParseNMRTreasuryUpdated(logs []*types.Log) ([]TreasuryUpdatedEvent, error) {
-	return parseTreasuryUpdated(nmrParsedABI, logs)
 }
 
 func parseTreasuryUpdated(parsed abi.ABI, logs []*types.Log) ([]TreasuryUpdatedEvent, error) {
@@ -282,160 +215,6 @@ func ParseUserFeeBpsCleared(logs []*types.Log) ([]UserFeeBpsClearedEvent, error)
 			return nil, err
 		}
 		out = append(out, UserFeeBpsClearedEvent{User: tmp.User, Raw: l})
-	}
-	return out, nil
-}
-
-// ---------- NMR parsers ----------
-
-// ParseFlashLoanRequested decodes all NMR FlashLoanRequested events.
-func ParseFlashLoanRequested(logs []*types.Log) ([]FlashLoanRequestedEvent, error) {
-	var out []FlashLoanRequestedEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "FlashLoanRequested", l) {
-			continue
-		}
-		var tmp struct {
-			Asset  common.Address
-			Amount *big.Int
-		}
-		if err := decodeEventLog(nmrParsedABI, "FlashLoanRequested", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, FlashLoanRequestedEvent{Asset: tmp.Asset, Amount: tmp.Amount, Raw: l})
-	}
-	return out, nil
-}
-
-// ParseFlashLoanExecuted decodes all NMR FlashLoanExecuted events.
-func ParseFlashLoanExecuted(logs []*types.Log) ([]FlashLoanExecutedEvent, error) {
-	var out []FlashLoanExecutedEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "FlashLoanExecuted", l) {
-			continue
-		}
-		var tmp struct {
-			Asset   common.Address
-			Amount  *big.Int
-			Premium *big.Int
-			Profit  *big.Int
-		}
-		if err := decodeEventLog(nmrParsedABI, "FlashLoanExecuted", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, FlashLoanExecutedEvent{
-			Asset: tmp.Asset, Amount: tmp.Amount, Premium: tmp.Premium, Profit: tmp.Profit, Raw: l,
-		})
-	}
-	return out, nil
-}
-
-// ParseFlashLoanFailed decodes all NMR FlashLoanFailed events (string reason variant).
-func ParseFlashLoanFailed(logs []*types.Log) ([]FlashLoanFailedEvent, error) {
-	var out []FlashLoanFailedEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "FlashLoanFailed", l) {
-			continue
-		}
-		var tmp struct {
-			Asset  common.Address
-			Amount *big.Int
-			Reason string
-		}
-		if err := decodeEventLog(nmrParsedABI, "FlashLoanFailed", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, FlashLoanFailedEvent{
-			Asset: tmp.Asset, Amount: tmp.Amount, Reason: tmp.Reason, Raw: l,
-		})
-	}
-	return out, nil
-}
-
-// ParseFlashLoanFailedWithData decodes all NMR FlashLoanFailedWithData events
-// (low-level revert data variant). Pair this with ParseFlashLoanFailed: the
-// contract emits one or the other depending on whether the revert carried a
-// decodable string reason.
-func ParseFlashLoanFailedWithData(logs []*types.Log) ([]FlashLoanFailedWithDataEvent, error) {
-	var out []FlashLoanFailedWithDataEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "FlashLoanFailedWithData", l) {
-			continue
-		}
-		var tmp struct {
-			Asset  common.Address
-			Amount *big.Int
-			Data   []byte
-		}
-		if err := decodeEventLog(nmrParsedABI, "FlashLoanFailedWithData", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, FlashLoanFailedWithDataEvent{
-			Asset: tmp.Asset, Amount: tmp.Amount, Data: tmp.Data, Raw: l,
-		})
-	}
-	return out, nil
-}
-
-// ParseNMRSwapExecuted decodes all NMR-emitted SwapExecuted events (the cycle
-// swap variant, distinct from Afi's). Use ParseSwapExecuted for Afi logs.
-func ParseNMRSwapExecuted(logs []*types.Log) ([]NMRSwapExecutedEvent, error) {
-	var out []NMRSwapExecutedEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "SwapExecuted", l) {
-			continue
-		}
-		var tmp struct {
-			AssetIn   common.Address
-			AmountIn  *big.Int
-			AssetOut  common.Address
-			AmountOut *big.Int
-		}
-		if err := decodeEventLog(nmrParsedABI, "SwapExecuted", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, NMRSwapExecutedEvent{
-			AssetIn: tmp.AssetIn, AmountIn: tmp.AmountIn,
-			AssetOut: tmp.AssetOut, AmountOut: tmp.AmountOut, Raw: l,
-		})
-	}
-	return out, nil
-}
-
-// ParseProfitSwept decodes all NMR ProfitSwept events.
-func ParseProfitSwept(logs []*types.Log) ([]ProfitSweptEvent, error) {
-	var out []ProfitSweptEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "ProfitSwept", l) {
-			continue
-		}
-		var tmp struct {
-			Asset  common.Address
-			Amount *big.Int
-			To     common.Address
-		}
-		if err := decodeEventLog(nmrParsedABI, "ProfitSwept", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, ProfitSweptEvent{Asset: tmp.Asset, Amount: tmp.Amount, To: tmp.To, Raw: l})
-	}
-	return out, nil
-}
-
-// ParseProfitShareUpdated decodes all NMR ProfitShareUpdated events.
-func ParseProfitShareUpdated(logs []*types.Log) ([]ProfitShareUpdatedEvent, error) {
-	var out []ProfitShareUpdatedEvent
-	for _, l := range logs {
-		if !matchesEvent(nmrParsedABI, "ProfitShareUpdated", l) {
-			continue
-		}
-		var tmp struct {
-			ProfitShare uint8
-		}
-		if err := decodeEventLog(nmrParsedABI, "ProfitShareUpdated", l, &tmp); err != nil {
-			return nil, err
-		}
-		out = append(out, ProfitShareUpdatedEvent{ProfitShare: tmp.ProfitShare, Raw: l})
 	}
 	return out, nil
 }

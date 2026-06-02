@@ -1,6 +1,6 @@
 import { decodeEventLog, type Log } from "viem"
-import { AFI_ABI, NMR_ABI } from "./constants.js"
-import type { Address, Hex } from "./types.js"
+import { AFI_ABI } from "./constants.js"
+import type { Address } from "./types.js"
 
 type AnyAbi = readonly unknown[]
 
@@ -87,84 +87,4 @@ export interface UserFeeBpsClearedEvent {
 
 export function parseUserFeeBpsCleared(logs: Log[]): UserFeeBpsClearedEvent[] {
   return parseAll<UserFeeBpsClearedEvent>(logs, AFI_ABI, "UserFeeBpsCleared")
-}
-
-// ─── NMR events ────────────────────────────────────────────────────────────────
-
-export interface FlashLoanRequestedEvent {
-  asset: Address
-  amount: bigint
-}
-
-export function parseFlashLoanRequested(logs: Log[]): FlashLoanRequestedEvent[] {
-  return parseAll<FlashLoanRequestedEvent>(logs, NMR_ABI, "FlashLoanRequested")
-}
-
-export interface FlashLoanExecutedEvent {
-  asset: Address
-  amount: bigint
-  premium: bigint
-  profit: bigint
-}
-
-export function parseFlashLoanExecuted(logs: Log[]): FlashLoanExecutedEvent[] {
-  return parseAll<FlashLoanExecutedEvent>(logs, NMR_ABI, "FlashLoanExecuted")
-}
-
-export interface FlashLoanFailedEvent {
-  asset: Address
-  amount: bigint
-  reason: string
-}
-
-export function parseFlashLoanFailed(logs: Log[]): FlashLoanFailedEvent[] {
-  return parseAll<FlashLoanFailedEvent>(logs, NMR_ABI, "FlashLoanFailed")
-}
-
-export interface FlashLoanFailedWithDataEvent {
-  asset: Address
-  amount: bigint
-  data: Hex
-}
-
-/**
- * Parses NMR FlashLoanFailedWithData events (low-level revert data variant).
- * Pair with parseFlashLoanFailed: the contract emits one or the other depending
- * on whether the revert carried a decodable string reason.
- */
-export function parseFlashLoanFailedWithData(logs: Log[]): FlashLoanFailedWithDataEvent[] {
-  return parseAll<FlashLoanFailedWithDataEvent>(logs, NMR_ABI, "FlashLoanFailedWithData")
-}
-
-export interface NmrSwapExecutedEvent {
-  assetIn: Address
-  amountIn: bigint
-  assetOut: Address
-  amountOut: bigint
-}
-
-/**
- * Parses NMR-emitted SwapExecuted events (the cycle-swap variant, distinct from
- * Afi's — no `from` field, different topic0). Use parseSwapExecuted for Afi logs.
- */
-export function parseNmrSwapExecuted(logs: Log[]): NmrSwapExecutedEvent[] {
-  return parseAll<NmrSwapExecutedEvent>(logs, NMR_ABI, "SwapExecuted")
-}
-
-export interface ProfitSweptEvent {
-  asset: Address
-  amount: bigint
-  to: Address
-}
-
-export function parseProfitSwept(logs: Log[]): ProfitSweptEvent[] {
-  return parseAll<ProfitSweptEvent>(logs, NMR_ABI, "ProfitSwept")
-}
-
-export interface ProfitShareUpdatedEvent {
-  profitShare: number
-}
-
-export function parseProfitShareUpdated(logs: Log[]): ProfitShareUpdatedEvent[] {
-  return parseAll<ProfitShareUpdatedEvent>(logs, NMR_ABI, "ProfitShareUpdated")
 }

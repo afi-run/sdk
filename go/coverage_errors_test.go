@@ -23,7 +23,6 @@ func badLog(parsed abi.ABI, name string) *types.Log {
 
 func TestEventParsers_DecodeErrors(t *testing.T) {
 	afi := func(n string) []*types.Log { return []*types.Log{badLog(afiParsedABI, n)} }
-	nmr := func(n string) []*types.Log { return []*types.Log{badLog(nmrParsedABI, n)} }
 
 	cases := []struct {
 		name string
@@ -32,17 +31,9 @@ func TestEventParsers_DecodeErrors(t *testing.T) {
 		{"ParseSwapExecuted", func() error { _, e := ParseSwapExecuted(afi("SwapExecuted")); return e }()},
 		{"ParseFeeCollected", func() error { _, e := ParseFeeCollected(afi("FeeCollected")); return e }()},
 		{"ParseAfiTreasuryUpdated", func() error { _, e := ParseAfiTreasuryUpdated(afi("TreasuryUpdated")); return e }()},
-		{"ParseNMRTreasuryUpdated", func() error { _, e := ParseNMRTreasuryUpdated(nmr("TreasuryUpdated")); return e }()},
 		{"ParseFeeBpsUpdated", func() error { _, e := ParseFeeBpsUpdated(afi("FeeBpsUpdated")); return e }()},
 		{"ParseUserFeeBpsSet", func() error { _, e := ParseUserFeeBpsSet(afi("UserFeeBpsSet")); return e }()},
 		{"ParseUserFeeBpsCleared", func() error { _, e := ParseUserFeeBpsCleared(afi("UserFeeBpsCleared")); return e }()},
-		{"ParseFlashLoanRequested", func() error { _, e := ParseFlashLoanRequested(nmr("FlashLoanRequested")); return e }()},
-		{"ParseFlashLoanExecuted", func() error { _, e := ParseFlashLoanExecuted(nmr("FlashLoanExecuted")); return e }()},
-		{"ParseFlashLoanFailed", func() error { _, e := ParseFlashLoanFailed(nmr("FlashLoanFailed")); return e }()},
-		{"ParseFlashLoanFailedWithData", func() error { _, e := ParseFlashLoanFailedWithData(nmr("FlashLoanFailedWithData")); return e }()},
-		{"ParseNMRSwapExecuted", func() error { _, e := ParseNMRSwapExecuted(nmr("SwapExecuted")); return e }()},
-		{"ParseProfitSwept", func() error { _, e := ParseProfitSwept(nmr("ProfitSwept")); return e }()},
-		{"ParseProfitShareUpdated", func() error { _, e := ParseProfitShareUpdated(nmr("ProfitShareUpdated")); return e }()},
 	}
 	for _, c := range cases {
 		if c.err == nil {
@@ -69,28 +60,12 @@ func TestEventParsers_SkipNonMatching(t *testing.T) {
 	add(len(r2), e)
 	r3, e := ParseAfiTreasuryUpdated(noise)
 	add(len(r3), e)
-	r4, e := ParseNMRTreasuryUpdated(noise)
-	add(len(r4), e)
 	r5, e := ParseFeeBpsUpdated(noise)
 	add(len(r5), e)
 	r6, e := ParseUserFeeBpsSet(noise)
 	add(len(r6), e)
 	r7, e := ParseUserFeeBpsCleared(noise)
 	add(len(r7), e)
-	r8, e := ParseFlashLoanRequested(noise)
-	add(len(r8), e)
-	r9, e := ParseFlashLoanExecuted(noise)
-	add(len(r9), e)
-	r10, e := ParseFlashLoanFailed(noise)
-	add(len(r10), e)
-	r11, e := ParseFlashLoanFailedWithData(noise)
-	add(len(r11), e)
-	r12, e := ParseNMRSwapExecuted(noise)
-	add(len(r12), e)
-	r13, e := ParseProfitSwept(noise)
-	add(len(r13), e)
-	r14, e := ParseProfitShareUpdated(noise)
-	add(len(r14), e)
 	for i, n := range results {
 		if n != 0 {
 			t.Errorf("parser #%d returned %d events for non-matching log, want 0", i, n)
@@ -125,9 +100,6 @@ func TestReads_DecodeErrors(t *testing.T) {
 		{"IsAfiOperator", func() error { _, e := c.IsAfiOperator(ctx, a, cid); return e }()},
 		{"GetOwner", func() error { _, e := c.GetOwner(ctx, a, cid); return e }()},
 		{"GetPendingOwner", func() error { _, e := c.GetPendingOwner(ctx, a, cid); return e }()},
-		{"GetNMRTreasury", func() error { _, e := c.GetNMRTreasury(ctx, cid); return e }()},
-		{"GetNMRProfitShare", func() error { _, e := c.GetNMRProfitShare(ctx, cid); return e }()},
-		{"IsNMROperator", func() error { _, e := c.IsNMROperator(ctx, a, cid); return e }()},
 		{"GetRoute", func() error { _, e := c.GetRoute(ctx, 1, cid); return e }()},
 		{"GetTreasuryBalance", func() error { _, e := c.GetTreasuryBalance(ctx, a, cid); return e }()},
 	}
@@ -139,7 +111,7 @@ func TestReads_DecodeErrors(t *testing.T) {
 }
 
 func TestWorkflows_AddressResolutionErrors(t *testing.T) {
-	// Unknown chain id → afiAddressForCtx / nmrAddressForCtx fail, so every
+	// Unknown chain id → afiAddressForCtx fails, so every
 	// wrapper returns early at its address-resolution error branch.
 	srv := newRPCServer(t, rpcHandlers{chainID: 999999})
 	defer srv.Close()
@@ -154,13 +126,6 @@ func TestWorkflows_AddressResolutionErrors(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"NMRArbitrage", func() error { _, e := c.NMRArbitrage(ctx, a, amt, params); return e }()},
-		{"NMRCycleSwap", func() error { _, e := c.NMRCycleSwap(ctx, a, amt, big.NewInt(0), params); return e }()},
-		{"NMRLoanArbitrage", func() error {
-			_, e := c.NMRLoanArbitrage(ctx, a, a, amt, big.NewInt(0), params, WithoutAllowancePrecheck())
-			return e
-		}()},
-		{"SweepNMRProfit", func() error { _, e := c.SweepNMRProfit(ctx, a, amt); return e }()},
 		{"SwapFor", func() error {
 			_, e := c.SwapFor(ctx, a, a, amt, a, big.NewInt(0), params, WithoutAllowancePrecheck())
 			return e
@@ -188,14 +153,13 @@ func TestWorkflows_AddressResolutionErrors(t *testing.T) {
 
 // TestRPCUnreachable_TransportErrors points the client at a dead port so every
 // eth_* call fails at dial — covering the callRead error branch in reads and the
-// DetectNetwork error branch in afiAddressForCtx / nmrAddressForCtx.
+// DetectNetwork error branch in afiAddressForCtx.
 func TestRPCUnreachable_TransportErrors(t *testing.T) {
 	c := mustClientWith(t, "http://127.0.0.1:1", testPrivKey)
 	defer c.Close()
 	ctx := testCtx()
 	a := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	amt := big.NewInt(1000)
-	params := []byte{0x00}
 	const cid int64 = 8453
 
 	reads := []func() error{
@@ -208,9 +172,6 @@ func TestRPCUnreachable_TransportErrors(t *testing.T) {
 		func() error { _, e := c.IsAfiOperator(ctx, a, cid); return e },
 		func() error { _, e := c.GetOwner(ctx, a, cid); return e },
 		func() error { _, e := c.GetPendingOwner(ctx, a, cid); return e },
-		func() error { _, e := c.GetNMRTreasury(ctx, cid); return e },
-		func() error { _, e := c.GetNMRProfitShare(ctx, cid); return e },
-		func() error { _, e := c.IsNMROperator(ctx, a, cid); return e },
 		func() error { _, e := c.GetRoute(ctx, 1, cid); return e },
 		func() error { _, e := c.ListRoutes(ctx, cid); return e },
 		func() error { _, e := c.GetTreasuryBalance(ctx, a, cid); return e },
@@ -223,13 +184,6 @@ func TestRPCUnreachable_TransportErrors(t *testing.T) {
 	}
 
 	writes := []func() error{
-		func() error { _, e := c.NMRArbitrage(ctx, a, amt, params); return e },
-		func() error { _, e := c.NMRCycleSwap(ctx, a, amt, big.NewInt(0), params); return e },
-		func() error {
-			_, e := c.NMRLoanArbitrage(ctx, a, a, amt, big.NewInt(0), params, WithoutAllowancePrecheck())
-			return e
-		},
-		func() error { _, e := c.SweepNMRProfit(ctx, a, amt); return e },
 		func() error { _, e := c.AdminPause(ctx); return e },
 		func() error { _, e := c.AdminRescueTokens(ctx, a, amt, a); return e },
 	}

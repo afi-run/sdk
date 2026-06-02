@@ -211,57 +211,6 @@ func (c *Client) GetPendingOwner(ctx context.Context, contract common.Address, c
 	return out[0].(common.Address), nil
 }
 
-// GetNMRTreasury reads NMR.treasury() on the given chain.
-func (c *Client) GetNMRTreasury(ctx context.Context, chainID int64) (common.Address, error) {
-	addr, _, err := addressForChain("GetNMRTreasury", NMRAddresses, chainID)
-	if err != nil {
-		return common.Address{}, err
-	}
-	raw, err := c.callRead(ctx, addr, nmrParsedABI, "treasury")
-	if err != nil {
-		return common.Address{}, err
-	}
-	out, err := nmrParsedABI.Unpack("treasury", raw)
-	if err != nil {
-		return common.Address{}, err
-	}
-	return out[0].(common.Address), nil
-}
-
-// GetNMRProfitShare reads NMR.PROFIT_SHARE() on the given chain.
-func (c *Client) GetNMRProfitShare(ctx context.Context, chainID int64) (uint8, error) {
-	addr, _, err := addressForChain("GetNMRProfitShare", NMRAddresses, chainID)
-	if err != nil {
-		return 0, err
-	}
-	raw, err := c.callRead(ctx, addr, nmrParsedABI, "PROFIT_SHARE")
-	if err != nil {
-		return 0, err
-	}
-	out, err := nmrParsedABI.Unpack("PROFIT_SHARE", raw)
-	if err != nil {
-		return 0, err
-	}
-	return out[0].(uint8), nil
-}
-
-// IsNMROperator reads NMR.isOperator(addr) on the given chain.
-func (c *Client) IsNMROperator(ctx context.Context, addr common.Address, chainID int64) (bool, error) {
-	nmrAddr, _, err := addressForChain("IsNMROperator", NMRAddresses, chainID)
-	if err != nil {
-		return false, err
-	}
-	raw, err := c.callRead(ctx, nmrAddr, nmrParsedABI, "isOperator", addr)
-	if err != nil {
-		return false, err
-	}
-	out, err := nmrParsedABI.Unpack("isOperator", raw)
-	if err != nil {
-		return false, err
-	}
-	return out[0].(bool), nil
-}
-
 // GetRoute reads RouteRegistry.getRoute(id) on the given chain.
 func (c *Client) GetRoute(ctx context.Context, id uint16, chainID int64) (common.Address, error) {
 	reg, err := c.GetRegistryAddress(ctx, chainID)
@@ -316,10 +265,9 @@ func (c *Client) GetTreasuryBalance(ctx context.Context, token common.Address, c
 
 // VerifyDeployment runs a quick sanity check against the deployed Afi contract,
 // bundling reads via the on-chain Multicall3 contract. Reports include zero
-// addresses, unset treasury, unset primary operator, and (when NMR is deployed
-// on the chain) an unset NMR treasury.
+// addresses, unset treasury, and unset primary operator.
 func (c *Client) VerifyDeployment(ctx context.Context, chainID int64) (*DeploymentReport, error) {
-	afiAddr, net, err := addressForChain("VerifyDeployment", AfiAddresses, chainID)
+	afiAddr, _, err := addressForChain("VerifyDeployment", AfiAddresses, chainID)
 	if err != nil {
 		return nil, err
 	}
@@ -400,48 +348,6 @@ func (c *Client) VerifyDeployment(ctx context.Context, chainID int64) (*Deployme
 		if out, err := afiParsedABI.Unpack("pendingOwner", results[5].ReturnData); err == nil {
 			if pending := out[0].(common.Address); pending != (common.Address{}) {
 				addIssue(fmt.Sprintf("Afi pendingOwner is %s — handover not complete (call acceptOwnership)", pending.Hex()))
-			}
-		}
-	}
-
-	// NMR sanity check (only on networks where NMR is deployed). Bundle the
-	// treasury/owner/pendingOwner reads in a single multicall.
-	if nmrAddr, ok := NMRAddresses[net]; ok && nmrAddr != (common.Address{}) {
-		nmrCalls := []Multicall3Call{}
-		addNMR := func(fn string) bool {
-			data, err := nmrParsedABI.Pack(fn)
-			if err != nil {
-				return false
-			}
-			nmrCalls = append(nmrCalls, Multicall3Call{Target: nmrAddr, AllowFailure: true, CallData: data})
-			return true
-		}
-		addNMR("treasury")
-		addNMR("owner")
-		addNMR("pendingOwner")
-
-		nmrRes, err := aggregate3(ctx, c.eth, c.multicall3, nmrCalls)
-		if err == nil && len(nmrRes) == len(nmrCalls) {
-			if nmrRes[0].Success {
-				if out, err := nmrParsedABI.Unpack("treasury", nmrRes[0].ReturnData); err == nil {
-					if out[0].(common.Address) == (common.Address{}) {
-						addIssue("NMR treasury is zero address")
-					}
-				}
-			}
-			if nmrRes[1].Success {
-				if out, err := nmrParsedABI.Unpack("owner", nmrRes[1].ReturnData); err == nil {
-					if out[0].(common.Address) == (common.Address{}) {
-						addIssue("NMR owner is zero address")
-					}
-				}
-			}
-			if nmrRes[2].Success {
-				if out, err := nmrParsedABI.Unpack("pendingOwner", nmrRes[2].ReturnData); err == nil {
-					if pending := out[0].(common.Address); pending != (common.Address{}) {
-						addIssue(fmt.Sprintf("NMR pendingOwner is %s — handover not complete", pending.Hex()))
-					}
-				}
 			}
 		}
 	}

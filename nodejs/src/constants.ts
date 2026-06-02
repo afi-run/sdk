@@ -30,25 +30,12 @@ export const ROUTE_QUOTER_ADDRESSES: Record<number, Address> = {
   42161: "0xBdD42B4fF06aCa8908D5E5d4826fFf5cdaC43895", // Arbitrum
 }
 
-/**
- * Deployed NMR (Nathan flash-loan executor) per chain ID. Only chains with
- * Aave V3 receive a deployment.
- */
-export const NMR_ADDRESSES: Record<number, Address> = {
-  1:     "0x29EfbFC1534A9B7af02142A5D97454E24Dc51b3a", // Ethereum
-  8453:  "0xefA12ba0196FD5ec44AF2ecAddc17333dF5FA779", // Base
-  42161: "0x6b533D53ec93eC30963b38576Ed8330Ff346a723", // Arbitrum
-}
-
 export const BASE_CHAIN_ID = 8453
 export const API_BASE_URL = "https://rpc.afi.run"
 export const WETH: Address = "0x4200000000000000000000000000000000000006"
 export const MULTICALL3_ADDRESS: Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 /** Default percentage added on top of estimated gas for write txs (approve, swap). */
 export const DEFAULT_GAS_BUFFER_PERCENT = 15
-
-/** Mirrors NMR.MAX_PROFIT_SHARE — operator profit cap in percent. */
-export const MAX_PROFIT_SHARE = 50
 
 /**
  * Block explorer base URLs by network. Override entries here at runtime to swap providers,
@@ -361,149 +348,6 @@ export const AFI_ABI = [
   { type: "error", name: "ReentrancyGuardReentrantCall", inputs: [] },
   { type: "error", name: "ZeroAddress", inputs: [] },
 ] as const
-
-export const NMR_ABI = [
-  {
-    type: "function",
-    name: "requestOperation",
-    inputs: [
-      { name: "asset", type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "params", type: "bytes" },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "swap",
-    inputs: [
-      { name: "tokenIn", type: "address" },
-      { name: "amountIn", type: "uint256" },
-      { name: "minOut", type: "uint256" },
-      { name: "params", type: "bytes" },
-    ],
-    outputs: [{ name: "out", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "loan",
-    inputs: [
-      { name: "user",   type: "address" },
-      { name: "asset",  type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "minOut", type: "uint256" },
-      { name: "params", type: "bytes"   },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "sweepProfit",
-    inputs: [
-      { name: "token", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "setTreasury",
-    inputs: [{ name: "treasury", type: "address" }],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "treasury",
-    inputs: [],
-    outputs: [{ name: "", type: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "PROFIT_SHARE",
-    inputs: [],
-    outputs: [{ name: "", type: "uint8" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "isOperator",
-    inputs: [{ name: "account", type: "address" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "event",
-    name: "FlashLoanRequested",
-    inputs: [
-      { name: "asset", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "FlashLoanExecuted",
-    inputs: [
-      { name: "asset", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "premium", type: "uint256", indexed: false },
-      { name: "profit", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "FlashLoanFailed",
-    inputs: [
-      { name: "asset", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "reason", type: "string", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "FlashLoanFailedWithData",
-    inputs: [
-      { name: "asset", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "data", type: "bytes", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "SwapExecuted",
-    inputs: [
-      { name: "assetIn", type: "address", indexed: true },
-      { name: "amountIn", type: "uint256", indexed: false },
-      { name: "assetOut", type: "address", indexed: true },
-      { name: "amountOut", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "ProfitSwept",
-    inputs: [
-      { name: "asset", type: "address", indexed: true },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "to", type: "address", indexed: true },
-    ],
-  },
-  {
-    type: "event",
-    name: "TreasuryUpdated",
-    inputs: [{ name: "treasury", type: "address", indexed: true }],
-  },
-  {
-    type: "event",
-    name: "ProfitShareUpdated",
-    inputs: [{ name: "profitShare", type: "uint8", indexed: false }],
-  },
-] as const
-
 export const MULTICALL3_ABI = [
   {
     type: "function",

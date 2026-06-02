@@ -3,7 +3,7 @@
 // layout expected by each DEX adapter contract.
 //
 // Use the resulting Step values with EncodeSteps to build the `params` argument
-// of Afi.swap / NMR.swap / NMR.loan.
+// of Afi.swap / Afi.swapFor.
 package afi
 
 import (

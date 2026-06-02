@@ -35,18 +35,6 @@ func (c *Client) afiAddressForCtx(ctx context.Context) (common.Address, error) {
 	return common.Address{}, fmt.Errorf("no Afi address known for network %q", net)
 }
 
-// nmrAddressForCtx resolves the deployed NMR contract for the active chain.
-func (c *Client) nmrAddressForCtx(ctx context.Context) (common.Address, error) {
-	net, err := c.DetectNetwork(ctx)
-	if err != nil {
-		return common.Address{}, err
-	}
-	if addr, ok := NMRAddresses[net]; ok && addr != (common.Address{}) {
-		return addr, nil
-	}
-	return common.Address{}, fmt.Errorf("NMR not deployed on network %q", net)
-}
-
 // SwapFor encodes Afi.swapFor(user, tokenIn, amountIn, tokenOut, minOut, params)
 // and submits it. Operator-only.
 //
@@ -99,79 +87,6 @@ func (c *Client) BatchSwapFor(ctx context.Context, swaps []SwapForRequest, opts 
 		encoded[i] = swapTuple{s.User, s.TokenIn, s.AmountIn, s.TokenOut, s.MinOut, s.Params}
 	}
 	return c.SendContractTx(ctx, to, afiParsedABI, "batchSwapFor", []interface{}{encoded}, opts...)
-}
-
-// NMRArbitrage wraps NMR.requestOperation(asset, amount, params).
-// The contract pulls a flash-loan, runs the encoded route, and keeps the profit
-// share. Operator-only on the NMR contract.
-func (c *Client) NMRArbitrage(ctx context.Context, asset common.Address, amount *big.Int, params []byte, opts ...SendOption) (*types.Receipt, error) {
-	to, err := c.nmrAddressForCtx(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return c.SendContractTx(ctx, to, nmrParsedABI, "requestOperation",
-		[]interface{}{asset, amount, params}, opts...)
-}
-
-// NMRCycleSwap wraps NMR.swap(asset, amount, minOut, params) — arbitrage cycle
-// where tokenIn == tokenOut. Operator-only.
-func (c *Client) NMRCycleSwap(ctx context.Context, asset common.Address, amount, minOut *big.Int, params []byte, opts ...SendOption) (*types.Receipt, error) {
-	to, err := c.nmrAddressForCtx(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return c.SendContractTx(ctx, to, nmrParsedABI, "swap",
-		[]interface{}{asset, amount, minOut, params}, opts...)
-}
-
-// NMRLoanArbitrage wraps NMR.loan(user, asset, amount, minOut, params) — user-
-// funded arbitrage.
-//
-// IMPORTANT: the caller (user) MUST pre-approve the NMR contract for at least
-// `amount` of `asset` before calling — the contract pulls the principal via
-// transferFrom and reverts otherwise. By default the SDK runs a precheck on
-// ERC20(asset).allowance(user, NMR) and refuses to send the tx when the
-// allowance is short; disable with WithoutAllowancePrecheck.
-func (c *Client) NMRLoanArbitrage(ctx context.Context, user, asset common.Address, amount, minOut *big.Int, params []byte, opts ...SendOption) (*types.Receipt, error) {
-	to, err := c.nmrAddressForCtx(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if precheckEnabled(opts) {
-		allowance, err := getAllowanceFor(ctx, c.eth, c.erc20, asset, user, to)
-		if err != nil {
-			return nil, fmt.Errorf("NMRLoanArbitrage allowance precheck: %w", err)
-		}
-		if allowance.Cmp(amount) < 0 {
-			return nil, ErrInsufficientAllowance(asset.Hex(), user.Hex(), to.Hex(), allowance, amount)
-		}
-	}
-	return c.SendContractTx(ctx, to, nmrParsedABI, "loan",
-		[]interface{}{user, asset, amount, minOut, params}, opts...)
-}
-
-// SweepNMRProfit wraps NMR.sweepProfit(asset, amount) — moves the operator's
-// profit share to the configured treasury. Validates that the NMR contract
-// actually holds at least `amount` of `asset` before sending; the on-chain
-// SafeERC20.transfer reverts with a non-decodable message otherwise.
-func (c *Client) SweepNMRProfit(ctx context.Context, asset common.Address, amount *big.Int, opts ...SendOption) (*types.Receipt, error) {
-	to, err := c.nmrAddressForCtx(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if amount == nil || amount.Sign() <= 0 {
-		return nil, fmt.Errorf("SweepNMRProfit: amount must be > 0")
-	}
-	balance, err := getBalance(ctx, c.eth, c.erc20, asset, to)
-	if err != nil {
-		return nil, fmt.Errorf("SweepNMRProfit balance check: %w", err)
-	}
-	if balance.Cmp(amount) < 0 {
-		return nil, fmt.Errorf("SweepNMRProfit: NMR contract %s holds %s of %s, requested %s",
-			to.Hex(), balance.String(), asset.Hex(), amount.String())
-	}
-	return c.SendContractTx(ctx, to, nmrParsedABI, "sweepProfit",
-		[]interface{}{asset, amount}, opts...)
 }
 
 // ───────────────────────── Admin wrappers ────────────────────────────────────

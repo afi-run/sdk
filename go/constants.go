@@ -37,15 +37,6 @@ var RouteQuoterAddresses = map[Network]common.Address{
 	NetworkArbitrum: common.HexToAddress("0xBdD42B4fF06aCa8908D5E5d4826fFf5cdaC43895"),
 }
 
-// NMRAddresses maps Network → deployed NathanMayerRothschild (NMR) contract.
-// Only deployed on Aave V3 chains.
-// Deployed 2026-05-30. Re-populate after redeploy.
-var NMRAddresses = map[Network]common.Address{
-	NetworkEthereum: common.HexToAddress("0x29EfbFC1534A9B7af02142A5D97454E24Dc51b3a"),
-	NetworkBase:     common.HexToAddress("0xefA12ba0196FD5ec44AF2ecAddc17333dF5FA779"),
-	NetworkArbitrum: common.HexToAddress("0x6b533D53ec93eC30963b38576Ed8330Ff346a723"),
-}
-
 const (
 	BaseChainID = int64(8453)
 	APIBaseURL  = "https://rpc.afi.run"
@@ -72,21 +63,17 @@ var NetworkChainIDs = map[Network]int64{
 	NetworkUnichain: 130,
 }
 
-// AFIABIJSON, ERC20ABIJSON, Multicall3ABIJSON, NMRABIJSON are the raw ABI
+// AFIABIJSON, ERC20ABIJSON, Multicall3ABIJSON are the raw ABI
 // definitions used by the SDK. Exported so callers can do custom contract
 // reads/writes with the same shapes.
 var (
 	AFIABIJSON        = afiABIJSON
 	ERC20ABIJSON      = erc20ABIJSON
 	Multicall3ABIJSON = multicall3ABIJSON
-	NMRABIJSON        = nmrABIJSON
 )
 
 // AfiABI is the parsed/exposed JSON string for the Afi contract.
 const AfiABI = afiABIJSON
-
-// NMRABI is the parsed/exposed JSON string for the NathanMayerRothschild contract.
-const NMRABI = nmrABIJSON
 
 // RouteRegistryABI is a minimal ABI exposing the routing read methods used by
 // the SDK (getRoute(uint16) -> address).
@@ -387,166 +374,6 @@ const afiABIJSON = `[
   {"type": "error", "name": "OwnableUnauthorizedAccount", "inputs": [{"name": "account", "type": "address"}]},
   {"type": "error", "name": "ReentrancyGuardReentrantCall", "inputs": []},
   {"type": "error", "name": "ZeroAddress",      "inputs": []}
-]`
-
-const nmrABIJSON = `[
-  {
-    "type": "function",
-    "name": "requestOperation",
-    "inputs": [
-      {"name": "asset",  "type": "address"},
-      {"name": "amount", "type": "uint256"},
-      {"name": "params", "type": "bytes"}
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "swap",
-    "inputs": [
-      {"name": "asset",  "type": "address"},
-      {"name": "amount", "type": "uint256"},
-      {"name": "minOut", "type": "uint256"},
-      {"name": "params", "type": "bytes"}
-    ],
-    "outputs": [{"name": "", "type": "uint256"}],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "loan",
-    "inputs": [
-      {"name": "user",   "type": "address"},
-      {"name": "asset",  "type": "address"},
-      {"name": "amount", "type": "uint256"},
-      {"name": "minOut", "type": "uint256"},
-      {"name": "params", "type": "bytes"}
-    ],
-    "outputs": [{"name": "", "type": "uint256"}],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "sweepProfit",
-    "inputs": [
-      {"name": "asset",  "type": "address"},
-      {"name": "amount", "type": "uint256"}
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "setTreasury",
-    "inputs": [{"name": "_treasury", "type": "address"}],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "treasury",
-    "inputs": [],
-    "outputs": [{"name": "", "type": "address"}],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "PROFIT_SHARE",
-    "inputs": [],
-    "outputs": [{"name": "", "type": "uint8"}],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "isOperator",
-    "inputs": [{"name": "account", "type": "address"}],
-    "outputs": [{"name": "", "type": "bool"}],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "owner",
-    "inputs": [],
-    "outputs": [{"name": "", "type": "address"}],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "pendingOwner",
-    "inputs": [],
-    "outputs": [{"name": "", "type": "address"}],
-    "stateMutability": "view"
-  },
-  {
-    "type": "event",
-    "name": "FlashLoanRequested",
-    "inputs": [
-      {"name": "asset",  "type": "address", "indexed": true},
-      {"name": "amount", "type": "uint256", "indexed": false}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "FlashLoanExecuted",
-    "inputs": [
-      {"name": "asset",   "type": "address", "indexed": true},
-      {"name": "amount",  "type": "uint256", "indexed": false},
-      {"name": "premium", "type": "uint256", "indexed": false},
-      {"name": "profit",  "type": "uint256", "indexed": false}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "FlashLoanFailed",
-    "inputs": [
-      {"name": "asset",  "type": "address", "indexed": true},
-      {"name": "amount", "type": "uint256", "indexed": false},
-      {"name": "reason", "type": "string",  "indexed": false}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "FlashLoanFailedWithData",
-    "inputs": [
-      {"name": "asset",  "type": "address", "indexed": true},
-      {"name": "amount", "type": "uint256", "indexed": false},
-      {"name": "data",   "type": "bytes",   "indexed": false}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "SwapExecuted",
-    "inputs": [
-      {"name": "assetIn",   "type": "address", "indexed": true},
-      {"name": "amountIn",  "type": "uint256", "indexed": false},
-      {"name": "assetOut",  "type": "address", "indexed": true},
-      {"name": "amountOut", "type": "uint256", "indexed": false}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "ProfitSwept",
-    "inputs": [
-      {"name": "asset",  "type": "address", "indexed": true},
-      {"name": "amount", "type": "uint256", "indexed": false},
-      {"name": "to",     "type": "address", "indexed": true}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "TreasuryUpdated",
-    "inputs": [
-      {"name": "treasury", "type": "address", "indexed": true}
-    ]
-  },
-  {
-    "type": "event",
-    "name": "ProfitShareUpdated",
-    "inputs": [
-      {"name": "profitShare", "type": "uint8", "indexed": false}
-    ]
-  }
 ]`
 
 const erc20ABIJSON = `[

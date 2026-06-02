@@ -21,13 +21,11 @@ import {
   DEFAULT_GAS_BUFFER_PERCENT,
   ERC20_ABI,
   NETWORK_CHAIN_IDS,
-  NMR_ABI,
-  NMR_ADDRESSES,
   OWNABLE2STEP_ABI,
   ROUTE_REGISTRY_ABI,
   TREASURY_OWNER,
 } from "./constants.js"
-import { ApprovalError, InsufficientBalanceError, NoSignerError } from "./errors.js"
+import { ApprovalError, NoSignerError } from "./errors.js"
 import { addressUrl, txUrl } from "./explorer.js"
 import {
   encodeApprove,
@@ -38,12 +36,6 @@ import {
   type EncodedTx,
   type SwapForArgs,
 } from "./encode.js"
-import {
-  encodeNMRLoan,
-  encodeNMRRequestOperation,
-  encodeNMRSweepProfit,
-  encodeNMRSwap,
-} from "./nmr.js"
 import {
   encodeAfiAddRule,
   encodeAfiClearRules,
@@ -864,84 +856,6 @@ export class AfiClient {
     return this.sendContractTx(AFI_ADDRESS, AFI_ABI, "batchSwapFor", [tuples])
   }
 
-  // ─── NMR workflows ───────────────────────────────────────────────────────────
-
-  /** Operator-only. Triggers an Aave V3 flash-loan and runs the encoded steps. */
-  async executeNMRArbitrage(args: {
-    asset: Address
-    amount: bigint
-    params: Hex
-    chainId?: number
-  }): Promise<TransactionReceipt> {
-    const nmr = this.requireNmrAddress(args.chainId)
-    return this.sendContractTx(nmr, NMR_ABI, "requestOperation", [args.asset, args.amount, args.params])
-  }
-
-  /** Operator-only. NMR `swap(asset, amount, minOut, params)` — single-tx cycle swap. */
-  async nmrCycleSwap(args: {
-    asset: Address
-    amount: bigint
-    minOut: bigint
-    params: Hex
-    chainId?: number
-  }): Promise<TransactionReceipt> {
-    const nmr = this.requireNmrAddress(args.chainId)
-    return this.sendContractTx(nmr, NMR_ABI, "swap", [args.asset, args.amount, args.minOut, args.params])
-  }
-
-  /**
-   * Operator-only. NMR `loan(user, asset, amount, minOut, params)` — pulls the
-   * user's tokens (the **user must pre-approve** NMR for `asset`/`amount` first),
-   * runs the route, then returns the swap output to the user.
-   *
-   * When `precheck` is true (default), reads `ERC20(asset).allowance(user, NMR)`
-   * off-chain and throws `ApprovalError` before submitting any tx if it is
-   * below `amount`. Pass `precheck: false` to skip the read.
-   */
-  async nmrLoanArbitrage(args: {
-    user: Address
-    asset: Address
-    amount: bigint
-    minOut: bigint
-    params: Hex
-    chainId?: number
-    precheck?: boolean
-  }): Promise<TransactionReceipt> {
-    const nmr = this.requireNmrAddress(args.chainId)
-    if (args.precheck !== false) {
-      const allowance = await getAllowanceFor(args.asset, args.user, nmr, this.pub)
-      if (allowance < args.amount) {
-        throw new ApprovalError(
-          `user ${args.user} allowance (${allowance.toString()}) on token ${args.asset} ` +
-          `for NMR ${nmr} is below amount (${args.amount.toString()})`,
-        )
-      }
-    }
-    return this.sendContractTx(nmr, NMR_ABI, "loan", [
-      args.user,
-      args.asset,
-      args.amount,
-      args.minOut,
-      args.params,
-    ])
-  }
-
-  /**
-   * Owner-only. Sweeps profit from NMR to the configured treasury.
-   *
-   * Reads `ERC20(asset).balanceOf(NMR)` first and throws
-   * `InsufficientBalanceError` if `amount` exceeds what the contract holds —
-   * surfaces an actionable error before paying gas for a guaranteed revert.
-   */
-  async sweepNMRProfit(args: { asset: Address; amount: bigint; chainId?: number }): Promise<TransactionReceipt> {
-    const nmr = this.requireNmrAddress(args.chainId)
-    const balance = await getBalance(args.asset, nmr, this.pub)
-    if (args.amount > balance) {
-      throw new InsufficientBalanceError(args.asset, balance, args.amount, nmr)
-    }
-    return this.sendContractTx(nmr, NMR_ABI, "sweepProfit", [args.asset, args.amount])
-  }
-
   // ─── Admin (owner-only) ──────────────────────────────────────────────────────
 
   /** Owner-only. `pause()` on the AFI router. */
@@ -1049,12 +963,6 @@ export class AfiClient {
     return a
   }
 
-  private requireNmrAddress(chainId?: number): Address {
-    const id = chainId ?? BASE_CHAIN_ID
-    const a = NMR_ADDRESSES[id]
-    if (!a) throw new Error(`no NMR deployment for chainId=${id}`)
-    return a
-  }
 
   /** Reads the AFI router pause flag. */
   async isPaused(chainId?: number): Promise<boolean> {
@@ -1136,35 +1044,6 @@ export class AfiClient {
       address: this.afiAddress(chainId),
       abi: AFI_ABI,
       functionName: "pendingOwner",
-    })
-  }
-
-  /** Reads `treasury()` on NMR (Nathan). */
-  async getNMRTreasury(chainId?: number): Promise<Address> {
-    return this.pub.readContract({
-      address: this.requireNmrAddress(chainId),
-      abi: NMR_ABI,
-      functionName: "treasury",
-    })
-  }
-
-  /** Reads the `PROFIT_SHARE` constant on NMR (out of 100). */
-  async getNMRProfitShare(chainId?: number): Promise<number> {
-    const v = await this.pub.readContract({
-      address: this.requireNmrAddress(chainId),
-      abi: NMR_ABI,
-      functionName: "PROFIT_SHARE",
-    })
-    return Number(v)
-  }
-
-  /** Returns true when `addr` is an NMR operator. */
-  async isNMROperator(addr: Address, chainId?: number): Promise<boolean> {
-    return this.pub.readContract({
-      address: this.requireNmrAddress(chainId),
-      abi: NMR_ABI,
-      functionName: "isOperator",
-      args: [addr],
     })
   }
 

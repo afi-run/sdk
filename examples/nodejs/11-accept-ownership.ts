@@ -8,8 +8,8 @@
  * This example assumes the running key (NEW_OWNER_PRIVATE_KEY) is the pending
  * owner. It:
  *   1. Reads `pendingOwner()` on the AFI router to confirm we are it.
- *   2. Sends `acceptOwnership()` to all 12 contracts that were transferred:
- *        RouteRegistry, Afi, NMR, CakeV3, UniV3, UniV4, Aerodrome,
+ *   2. Sends `acceptOwnership()` to all 11 contracts that were transferred:
+ *        RouteRegistry, Afi, CakeV3, UniV3, UniV4, Aerodrome,
  *        BalancerV3, Curve128, Curve256, FluidDex, AaveLiquidator.
  *
  * For Safe / multi-sig owners, you'd batch these in the Safe UI instead —
@@ -18,7 +18,7 @@
  * Prerequisites:
  *  - RPC_URL                  — Base RPC endpoint
  *  - NEW_OWNER_PRIVATE_KEY    — pending owner key for every contract
- *  - ROUTE_REGISTRY, AFI, NMR, CAKEV3, UNIV3, UNIV4, AERODROME, BALANCERV3,
+ *  - ROUTE_REGISTRY, AFI, CAKEV3, UNIV3, UNIV4, AERODROME, BALANCERV3,
  *    CURVE128, CURVE256, FLUIDDEX, AAVE_LIQUIDATOR  — addresses to accept on
  *    (missing addresses are skipped with a log line)
  *
@@ -47,7 +47,6 @@ const OWNER_KEY  = process.env.NEW_OWNER_PRIVATE_KEY  as Hex
 const TARGETS: { name: string; addr?: string }[] = [
   { name: "RouteRegistry",  addr: process.env.ROUTE_REGISTRY  },
   { name: "Afi",            addr: process.env.AFI             },
-  { name: "NMR",            addr: process.env.NMR             },
   { name: "CakeV3",         addr: process.env.CAKEV3          },
   { name: "UniV3",          addr: process.env.UNIV3           },
   { name: "UniV4",          addr: process.env.UNIV4           },

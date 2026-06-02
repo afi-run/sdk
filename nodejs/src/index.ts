@@ -13,11 +13,8 @@ export {
   NETWORK_CHAIN_IDS,
   ROUTE_QUOTER_ADDRESSES,
   ROUTE_REGISTRY_ABI,
-  NMR_ADDRESSES,
-  NMR_ABI,
   OWNABLE2STEP_ABI,
   TREASURY_OWNER,
-  MAX_PROFIT_SHARE,
 } from "./constants.js"
 export {
   AfiError,
@@ -73,13 +70,6 @@ export type {
   BuildAaveLiquidatorStepInput,
 } from "./builders.js"
 export {
-  encodeNMRRequestOperation,
-  encodeNMRSwap,
-  encodeNMRLoan,
-  encodeNMRSweepProfit,
-  encodeNMRSetTreasury,
-} from "./nmr.js"
-export {
   MAX_FEE_BPS,
   encodeAfiPause,
   encodeAfiUnpause,
@@ -102,13 +92,6 @@ export {
   parseFeeBpsUpdated,
   parseUserFeeBpsSet,
   parseUserFeeBpsCleared,
-  parseFlashLoanRequested,
-  parseFlashLoanExecuted,
-  parseFlashLoanFailed,
-  parseFlashLoanFailedWithData,
-  parseNmrSwapExecuted,
-  parseProfitSwept,
-  parseProfitShareUpdated,
 } from "./events.js"
 export type {
   SwapExecutedEvent,
@@ -117,13 +100,6 @@ export type {
   FeeBpsUpdatedEvent,
   UserFeeBpsSetEvent,
   UserFeeBpsClearedEvent,
-  FlashLoanRequestedEvent,
-  FlashLoanExecutedEvent,
-  FlashLoanFailedEvent,
-  FlashLoanFailedWithDataEvent,
-  NmrSwapExecutedEvent,
-  ProfitSweptEvent,
-  ProfitShareUpdatedEvent,
 } from "./events.js"
 export {
   decodeRevertReason,
@@ -212,6 +188,6 @@ export type {
   LiquidateRequest,
   LiquidationResult,
 } from "./quoter.js"
-export { simulateRoute, mappingSlot, ROUTE_QUOTER_ABI } from "./simulate.js"
+export { simulateRoute, detectBalanceSlot, mappingSlot, ROUTE_QUOTER_ABI } from "./simulate.js"
 export type { SimulationResult, SimulateOpts } from "./simulate.js"
 export { lookupBalanceSlot, registerBalanceSlot } from "./token-slots.js"
