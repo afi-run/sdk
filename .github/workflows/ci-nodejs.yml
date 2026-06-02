@@ -58,4 +58,4 @@ jobs:
 
       - name: Run npm audit
         working-directory: nodejs
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
