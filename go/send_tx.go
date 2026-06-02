@@ -51,7 +51,7 @@ func WithGasBuffer(pct uint) SendOption {
 }
 
 // WithoutAllowancePrecheck disables the off-chain allowance precheck performed
-// by SwapFor / NMRLoanArbitrage. Use when you know the on-chain state changed
+// by SwapFor. Use when you know the on-chain state changed
 // inside the same block (e.g. you just sent the approve in this very batch).
 func WithoutAllowancePrecheck() SendOption {
 	return func(o *sendOptions) { o.skipAllowanceCheck = true }

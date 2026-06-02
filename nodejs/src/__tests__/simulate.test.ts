@@ -1,8 +1,27 @@
 import { describe, expect, it } from "vitest"
-import { keccak256, encodeAbiParameters, getAddress } from "viem"
-import { mappingSlot, simulateRoute } from "../simulate.js"
+import { keccak256, encodeAbiParameters, getAddress, pad, type Hex } from "viem"
+import { mappingSlot, simulateRoute, detectBalanceSlot } from "../simulate.js"
 import { lookupBalanceSlot, registerBalanceSlot } from "../token-slots.js"
 import type { Address } from "../types.js"
+
+// A publicClient stub whose balanceOf reflects the overridden slot value
+// (faithful EVM behavior), so detectBalanceSlot matches the first probed slot.
+// quote() calls return an encoded (outputAsset, amountOut) tuple.
+function fakeClient(asset: Address, amountOut: bigint) {
+  return {
+    call: async ({ data, stateOverride }: any) => {
+      if (typeof data === "string" && data.startsWith("0x70a08231")) {
+        return { data: stateOverride[0].stateDiff[0].value as Hex }
+      }
+      return {
+        data: encodeAbiParameters(
+          [{ type: "address" }, { type: "uint256" }],
+          [asset, amountOut],
+        ),
+      }
+    },
+  } as never
+}
 
 describe("lookupBalanceSlot", () => {
   it("returns slot 3 for Base WETH", () => {
@@ -67,16 +86,43 @@ describe("simulateRoute input validation", () => {
     ).rejects.toThrow(/amount must be > 0/)
   })
 
-  it("rejects unknown token", async () => {
+  it("auto-detects the slot for an unknown token and caches it", async () => {
+    const asset = getAddress("0x000000000000000000000000000000000000cafe")
+    expect(lookupBalanceSlot(8453, asset)).toBeUndefined()
+
+    const res = await simulateRoute({
+      publicClient: fakeClient(asset, 999n),
+      chainId: 8453,
+      quoterAddress: "0x0000000000000000000000000000000000000001",
+      asset,
+      amount: 1n,
+      stepsEncoded: "0x00",
+    })
+
+    expect(res.reverted).toBe(false)
+    expect(res.amountOut).toBe(999n)
+    // slot detected on the first probe (0) and cached
+    expect(lookupBalanceSlot(8453, asset)).toBe(0)
+  })
+})
+
+describe("detectBalanceSlot", () => {
+  it("detects and registers the backing slot", async () => {
+    const token = "0x000000000000000000000000000000000000F00d" as Address
+    expect(lookupBalanceSlot(1, token)).toBeUndefined()
+
+    const slot = await detectBalanceSlot(fakeClient(token, 0n), 1, token)
+    expect(slot).toBe(0)
+    expect(lookupBalanceSlot(1, token)).toBe(0)
+  })
+
+  it("throws when no slot matches within maxSlot", async () => {
+    // client that never echoes the sentinel → no slot ever matches
+    const client = {
+      call: async () => ({ data: pad("0x00" as Hex, { size: 32 }) }),
+    } as never
     await expect(
-      simulateRoute({
-        publicClient: {} as never,
-        chainId: 8453,
-        quoterAddress: "0x0000000000000000000000000000000000000001",
-        asset: "0x000000000000000000000000000000000000cAfE",
-        amount: 1n,
-        stepsEncoded: "0x00",
-      }),
-    ).rejects.toThrow(/no static balance slot/)
+      detectBalanceSlot(client, 1, "0x000000000000000000000000000000000000dEaD", 3),
+    ).rejects.toThrow(/not detected/)
   })
 })

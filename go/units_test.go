@@ -18,6 +18,10 @@ func TestFormatUnits(t *testing.T) {
 		{"whole WETH 18 dec", new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil), 18, "1"},
 		{"half WETH", new(big.Int).Div(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil), big.NewInt(2)), 18, "0.5"},
 		{"zero", big.NewInt(0), 6, "0"},
+		{"negative sub-unit", big.NewInt(-362), 6, "-0.000362"},
+		{"negative fractional", big.NewInt(-1_500000), 6, "-1.5"},
+		{"negative whole", big.NewInt(-1000_000000), 6, "-1000"},
+		{"negative sub-unit no trailing zeros", big.NewInt(-123456), 6, "-0.123456"},
 	}
 
 	for _, tt := range tests {

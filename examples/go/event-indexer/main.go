@@ -3,8 +3,6 @@
 // Reads the last N blocks from Base and tabulates the protocol's main events:
 //   - SwapExecuted        (Afi)
 //   - FeeCollected        (Afi)
-//   - FlashLoanExecuted   (NMR)
-//   - ProfitSwept         (NMR)
 //
 // Uses go-ethereum FilterLogs per contract address, then runs each batch
 // through the SDK's typed parsers.
@@ -60,27 +58,18 @@ func main() {
 	fmt.Printf("Scanning blocks %d → %d (%d blocks)\n\n", fromBlock, tip, blockRange)
 
 	afiAddr := afi.AfiAddresses[afi.NetworkBase]
-	nmrAddr := afi.NMRAddresses[afi.NetworkBase]
 
 	afiLogs, err := getLogs(ctx, eth, afiAddr, fromBlock, int64(tip))
 	if err != nil {
 		log.Fatal("afi logs:", err)
 	}
-	nmrLogs, err := getLogs(ctx, eth, nmrAddr, fromBlock, int64(tip))
-	if err != nil {
-		log.Fatal("nmr logs:", err)
-	}
 
 	swaps, _ := afi.ParseSwapExecuted(afiLogs)
 	feeCollects, _ := afi.ParseFeeCollected(afiLogs)
-	flashLoans, _ := afi.ParseFlashLoanExecuted(nmrLogs)
-	profitSweeps, _ := afi.ParseProfitSwept(nmrLogs)
 
 	fmt.Printf("Event counts:\n")
 	fmt.Printf("  SwapExecuted        %d\n", len(swaps))
-	fmt.Printf("  FeeCollected        %d\n", len(feeCollects))
-	fmt.Printf("  FlashLoanExecuted   %d\n", len(flashLoans))
-	fmt.Printf("  ProfitSwept         %d\n\n", len(profitSweeps))
+	fmt.Printf("  FeeCollected        %d\n\n", len(feeCollects))
 
 	if len(swaps) > 0 {
 		fmt.Println("Recent SwapExecuted:")
@@ -88,22 +77,6 @@ func main() {
 			fmt.Printf("  %s %s → %s amount=%s/%s\n",
 				s.From.Hex(), s.AssetIn.Hex(), s.AssetOut.Hex(),
 				s.AmountIn.String(), s.AmountOut.String())
-		}
-	}
-	if len(flashLoans) > 0 {
-		fmt.Println("\nRecent FlashLoanExecuted:")
-		for _, f := range tail(flashLoans, 3) {
-			fmt.Printf("  %s profit=%s premium=%s\n",
-				f.Asset.Hex(),
-				afi.FormatUnits(f.Profit, 6),
-				afi.FormatUnits(f.Premium, 6))
-		}
-	}
-	if len(profitSweeps) > 0 {
-		fmt.Println("\nRecent ProfitSwept:")
-		for _, p := range tail(profitSweeps, 3) {
-			fmt.Printf("  %s → %s amount=%s\n",
-				p.Asset.Hex(), p.To.Hex(), p.Amount.String())
 		}
 	}
 }

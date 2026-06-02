@@ -36,51 +36,6 @@ func TestEncodeAcceptOwnership_Selector(t *testing.T) {
 	}
 }
 
-// ─── L.4 SweepNMRProfit input validation ─────────────────────────────────────
-
-// TestSweepNMRProfit_RejectsZeroAmount confirms the SDK refuses to submit a
-// sweep for zero (would always revert on-chain).
-func TestSweepNMRProfit_RejectsZeroAmount(t *testing.T) {
-	srv := newRPCServer(t, rpcHandlers{chainID: 8453})
-	defer srv.Close()
-
-	c := mustClientWith(t, srv.URL, testPrivKey)
-	defer c.Close()
-
-	// Inject Base as the resolved network so nmrAddressForCtx returns a non-zero address.
-	_, err := c.SweepNMRProfit(testCtx(), common.HexToAddress("0xdeadbeef"), big.NewInt(0))
-	if err == nil {
-		t.Fatal("expected error for zero amount, got nil")
-	}
-	if !strings.Contains(err.Error(), "amount must be > 0") {
-		t.Errorf("expected amount > 0 error, got: %v", err)
-	}
-}
-
-// TestSweepNMRProfit_RejectsInsufficientBalance verifies the balance precheck
-// catches the case where the NMR contract holds less than the requested sweep.
-func TestSweepNMRProfit_RejectsInsufficientBalance(t *testing.T) {
-	// chainId for Base, balanceOf returns 100.
-	srv := newRPCServer(t, rpcHandlers{
-		chainID: 8453,
-		ethCall: func(to common.Address, data []byte) []byte {
-			return encodeUint256(big.NewInt(100))
-		},
-	})
-	defer srv.Close()
-
-	c := mustClientWith(t, srv.URL, testPrivKey)
-	defer c.Close()
-
-	_, err := c.SweepNMRProfit(testCtx(), common.HexToAddress("0xdeadbeef"), big.NewInt(1000))
-	if err == nil {
-		t.Fatal("expected insufficient balance error, got nil")
-	}
-	if !strings.Contains(err.Error(), "holds 100") {
-		t.Errorf("expected balance error message, got: %v", err)
-	}
-}
-
 // ─── L.5 Typed HTTP errors ────────────────────────────────────────────────────
 
 func TestDoHTTPRequest_NetworkError(t *testing.T) {

@@ -107,12 +107,23 @@ type quoterResponse struct {
 }
 
 func formatAmount(amount *big.Int, decimals uint8) string {
+	// Split on the magnitude and re-apply the sign at the end. big.Int Div/Mod
+	// are floored (Euclidean), so a negative amount smaller than one unit would
+	// otherwise render as "-1.99…" (whole borrows to -1, frac wraps up) instead
+	// of "-0.00…". Working on the absolute value sidesteps that.
+	sign := ""
+	mag := amount
+	if amount.Sign() < 0 {
+		sign = "-"
+		mag = new(big.Int).Neg(amount)
+	}
+
 	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-	whole := new(big.Int).Div(amount, divisor)
-	frac := new(big.Int).Mod(amount, divisor)
+	whole := new(big.Int).Quo(mag, divisor)
+	frac := new(big.Int).Rem(mag, divisor)
 
 	if frac.Sign() == 0 {
-		return whole.String()
+		return sign + whole.String()
 	}
 
 	fracStr := frac.String()
@@ -120,7 +131,7 @@ func formatAmount(amount *big.Int, decimals uint8) string {
 		fracStr = "0" + fracStr
 	}
 	fracStr = strings.TrimRight(fracStr, "0")
-	return whole.String() + "." + fracStr
+	return sign + whole.String() + "." + fracStr
 }
 
 // fetchQuote is called by the client, passing the resolved options and quoter URL.

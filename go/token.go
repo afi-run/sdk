@@ -47,8 +47,7 @@ func getAllowance(ctx context.Context, client *ethclient.Client, erc20ABI abi.AB
 }
 
 // getAllowanceFor reads ERC20(token).allowance(owner, spender). Generic version
-// of getAllowance — required by workflow prechecks that target the NMR contract
-// rather than the AFI router.
+// of getAllowance — used by workflow prechecks that target an arbitrary spender.
 func getAllowanceFor(ctx context.Context, client *ethclient.Client, erc20ABI abi.ABI, token, owner, spender common.Address) (*big.Int, error) {
 	out, err := callERC20(ctx, client, erc20ABI, token, "allowance", owner, spender)
 	if err != nil {

@@ -74,6 +74,10 @@ var RouteQuoterABIJSON = routeQuoterABIJSON
 
 var routeQuoterABI = mustParseABI(routeQuoterABIJSON)
 
+// autoDetectMaxSlot bounds the brute-force balance-slot search triggered when a
+// token is missing from the static table (the highest curated slot is 51).
+const autoDetectMaxSlot = 128
+
 // SimulateRoute runs `RouteQuoter.quote(asset, amount, params)` via eth_call
 // with a state_override that grants the quoter contract a virtual balance of
 // `amount` of `asset`.
@@ -81,9 +85,11 @@ var routeQuoterABI = mustParseABI(routeQuoterABIJSON)
 // On success returns the real outputAsset and amountOut. On any internal route
 // revert, returns Reverted=true and the raw revert payload for decoding.
 //
-// This is a pure function — no caching, no I/O beyond the single eth_call.
-// Callers wanting batched simulations should call it concurrently with their
-// own coordination.
+// If `asset`'s balance slot is not in the static table, it is auto-detected
+// on-chain via DetectBalanceSlot and cached (one extra round of eth_calls the
+// first time a new token is seen; subsequent calls hit the cache). This keeps
+// simulation working for any token the backend lists without hand-maintaining
+// the slot table.
 func SimulateRoute(ctx context.Context, opts SimulateOpts) (*SimulationResult, error) {
 	if opts.RPCClient == nil {
 		return nil, fmt.Errorf("afi.SimulateRoute: RPCClient is required")
@@ -95,6 +101,14 @@ func SimulateRoute(ctx context.Context, opts SimulateOpts) (*SimulationResult, e
 	callData, err := routeQuoterABI.Pack("quote", opts.Asset, opts.Amount, opts.StepsEncoded)
 	if err != nil {
 		return nil, fmt.Errorf("afi.SimulateRoute: pack quote: %w", err)
+	}
+
+	// Self-heal: an unknown token's slot is detected on-chain and registered,
+	// so BuildBalanceOverride below resolves it.
+	if _, ok := LookupBalanceSlot(opts.ChainID, opts.Asset); !ok {
+		if _, derr := DetectBalanceSlot(ctx, opts.RPCClient, opts.ChainID, opts.Asset, autoDetectMaxSlot); derr != nil {
+			return nil, fmt.Errorf("afi.SimulateRoute: detect balance slot: %w", derr)
+		}
 	}
 
 	override, err := BuildBalanceOverride(opts.ChainID, opts.Asset, opts.QuoterAddr, opts.Amount)

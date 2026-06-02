@@ -306,33 +306,6 @@ describe("AfiClient — swapFor precheck", () => {
   })
 })
 
-describe("AfiClient — sweepNMRProfit balance validation", () => {
-  const ASSET = "0x4444444444444444444444444444444444444444" as const
-
-  it("throws InsufficientBalanceError when amount > balance", async () => {
-    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
-    client.connect(PK)
-    // balanceOf(NMR) returns 100
-    ;(client as any).pub.readContract = vi.fn().mockResolvedValue(100n)
-    await expect(
-      client.sweepNMRProfit({ asset: ASSET, amount: 1_000n }),
-    ).rejects.toMatchObject({ code: "INSUFFICIENT_BALANCE" })
-  })
-
-  it("proceeds when balance >= amount", async () => {
-    const client = new AfiClient({ rpcUrl: "http://localhost:1" })
-    client.connect(PK)
-    ;(client as any).pub.readContract = vi.fn().mockResolvedValue(10_000n)
-    ;(client as any).pub.estimateContractGas = vi.fn().mockResolvedValue(50_000n)
-    const writeSpy = vi.fn().mockResolvedValue("0xsweep")
-    ;(client as any).wallet = { writeContract: writeSpy }
-    ;(client as any).pub.waitForTransactionReceipt = vi.fn().mockResolvedValue({ blockNumber: 1n, gasUsed: 0n })
-
-    await client.sweepNMRProfit({ asset: ASSET, amount: 100n })
-    expect(writeSpy).toHaveBeenCalledTimes(1)
-  })
-})
-
 describe("AfiClient — acceptOwnership", () => {
   const C1 = "0x1111111111111111111111111111111111111111" as const
   const C2 = "0x2222222222222222222222222222222222222222" as const

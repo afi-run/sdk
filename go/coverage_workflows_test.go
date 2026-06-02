@@ -8,9 +8,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// TestWorkflows_WriteWrappers exercises every NMR/admin/swap wrapper through the
+// TestWorkflows_WriteWrappers exercises every admin/swap wrapper through the
 // fake RPC write path (estimateGas → sendRawTransaction → receipt). It covers
-// the wrappers plus afiAddressForCtx / nmrAddressForCtx / SendContractTx.
+// the wrappers plus afiAddressForCtx / SendContractTx.
 func TestWorkflows_WriteWrappers(t *testing.T) {
 	srv := newRPCServer(t, rpcHandlers{
 		chainID:     8453,
@@ -18,7 +18,7 @@ func TestWorkflows_WriteWrappers(t *testing.T) {
 		gasEstimate: 300_000,
 		baseFee:     big.NewInt(1_000_000_000),
 		gasTip:      big.NewInt(1_000_000),
-		// Large value so the NMRLoanArbitrage allowance precheck passes.
+		// Large value so the SwapFor allowance precheck passes.
 		ethCall:         func(common.Address, []byte) []byte { return encodeUint256(new(big.Int).Lsh(big.NewInt(1), 200)) },
 		receiptSucceeds: true,
 	})
@@ -35,9 +35,6 @@ func TestWorkflows_WriteWrappers(t *testing.T) {
 		name string
 		fn   func() (*types.Receipt, error)
 	}{
-		{"NMRArbitrage", func() (*types.Receipt, error) { return c.NMRArbitrage(ctx, a, amt, params) }},
-		{"NMRCycleSwap", func() (*types.Receipt, error) { return c.NMRCycleSwap(ctx, a, amt, big.NewInt(0), params) }},
-		{"NMRLoanArbitrage", func() (*types.Receipt, error) { return c.NMRLoanArbitrage(ctx, a, a, amt, big.NewInt(0), params) }},
 		{"SwapFor", func() (*types.Receipt, error) {
 			return c.SwapFor(ctx, a, a, amt, a, big.NewInt(0), params, WithoutAllowancePrecheck())
 		}},

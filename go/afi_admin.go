@@ -12,9 +12,6 @@ import (
 // MaxFeeBps is the maximum protocol fee (mirrors Afi.MAX_FEE_BPS).
 const MaxFeeBps uint16 = 50
 
-// MaxProfitShare matches NMR.MAX_PROFIT_SHARE — operator profit cap in percent.
-const MaxProfitShare uint8 = 50
-
 // afiParsedABI is the lazily-parsed Afi contract ABI — it relies on the
 // AfiABI constant defined in constants.go.
 var afiParsedABI = func() abi.ABI {
