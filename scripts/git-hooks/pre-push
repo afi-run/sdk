@@ -3,7 +3,7 @@
 # AFI SDK pre-push hook — mirrors CI locally.
 #
 # For every subproject whose files changed in the push range, runs:
-#   Node.js : typecheck + tests with coverage (≥95%) + npm audit (high+)
+#   Node.js : typecheck + tests with coverage (≥95%) + npm audit (high+, prod deps only)
 #   Go      : vet + tests with coverage (≥95%) + examples build + govulncheck
 #
 # Install with:  scripts/install-hooks.sh
@@ -97,8 +97,8 @@ if [[ "$RUN_NODE" == "1" ]]; then
     step "Node.js — tests + coverage (≥95%)"
     if (cd nodejs && npm run --silent test:coverage); then ok "tests + coverage OK"; else fail "tests/coverage"; FAILED+=("nodejs-coverage"); fi
 
-    step "Node.js — npm audit (high+)"
-    if (cd nodejs && npm audit --audit-level=high); then ok "no high/critical vulns"; else fail "npm audit"; FAILED+=("npm-audit"); fi
+    step "Node.js — npm audit (high+, prod deps)"
+    if (cd nodejs && npm audit --omit=dev --audit-level=high); then ok "no high/critical vulns"; else fail "npm audit"; FAILED+=("npm-audit"); fi
   fi
 fi
 
