@@ -1385,6 +1385,16 @@ Deploy em 2026-05-30. Todos os contratos verificados no respectivo block explore
 | Base | `0xB5637138Cee6e757B679FFF8aDEA8DBa3E7544bB` |
 | Arbitrum | `0xBdD42B4fF06aCa8908D5E5d4826fFf5cdaC43895` |
 
+**AfiReferralRouter (wrapper com taxa de referral)** — `REFERRAL_ROUTER_ADDRESSES` (TS) / `afi.ReferralRouterAddresses` (Go). Deploy em 2026-06-03:
+
+| Chain | Endereço |
+|---|---|
+| Ethereum (1) | `0x47E7cE4237130F02202e081Efa1Fd338F23Ead77` |
+| BSC (56) | `0x7356960324a627994bb5959CF615DC5f2B38B738` |
+| Unichain (130) | `0xcdC506dEA82FE7d034C0281564d0dbe49171D242` |
+| Base (8453) | `0x2dC7a3990618baa91c450521004F14A334BF47c6` |
+| Arbitrum (42161) | `0x9DaD9322e196F734Fa25eC3b0db90387945B397C` |
+
 ### Outras constantes
 
 | Nome                  | Valor |
@@ -1598,6 +1608,76 @@ caso contrário cai `OwnableUnauthorizedAccount`. O mesmo vale para
 
 ---
 
+## Roteador de referral
+
+O `AfiReferralRouter` é um wrapper fino na frente do `Afi`: ele repassa o swap e
+pode cobrar uma taxa de referral de até **0,10%** (`REFERRAL_HARD_CAP_BPS = 10`)
+sobre o token de **saída**, creditada a um referrer e sacada depois via `claim`.
+O roteador não precisa ser operator do Afi — usa o `swap` público do Afi.
+
+O SDK fornece **encoders de calldata** (ainda sem wrappers `client.*` de alto
+nível); assine e envie a calldata retornada com viem (TS) ou go-ethereum (Go).
+
+### Swap com taxa de referral
+
+```typescript
+import {
+  encodeSwapWithReferral,
+  referralRouterAddress,
+  REFERRAL_HARD_CAP_BPS,
+} from "@afi-run/sdk"
+
+const data = encodeSwapWithReferral({
+  tokenIn, amountIn: 1_000_000n, tokenOut,
+  minOut: 990_000n,            // exigido DEPOIS da taxa de referral
+  params,                       // params de rota do Afi (ver step builders)
+  referrer,                     // endereço zero desativa a taxa
+  referralBps: REFERRAL_HARD_CAP_BPS, // <= 10
+})
+const hash = await wallet.sendTransaction({ to: referralRouterAddress(8453), data })
+```
+
+```go
+data, _ := afi.EncodeSwapWithReferral(tokenIn, amountIn, tokenOut, minOut, params, referrer, afi.ReferralHardCapBps)
+to, _, _ := afi.ReferralRouterAddress(8453)
+// assine e envie `data` para `to` com go-ethereum
+```
+
+O `minOut` é exigido pelo roteador sobre o valor **líquido** (o roteador chama o
+Afi com `minOut = 0` e aplica a taxa depois). O referrer saca os créditos com
+`encodeReferralClaim(token, to)` / `encodeReferralClaimMany(tokens, to)`.
+
+### Swaps delegados
+
+O dono dos fundos (A) pode autorizar um delegado (B) a operar os tokens de A,
+limitado por um valor e um prazo; a **saída sempre volta para A**:
+
+```typescript
+// A autoriza o delegado B para `tokenIn`
+encodeSetDelegateAllowance(tokenIn, delegate, 1_000_000n, prazoEmSegundosUnix)
+// depois, B dispara o swap em nome de A (a saída vai para A)
+encodeSwapWithReferralFor({ user: A, tokenIn, amountIn, tokenOut, minOut, params, referrer, referralBps })
+// A pode revogar a qualquer momento
+encodeRevokeDelegate(tokenIn, delegate)
+```
+
+**Não há proteção de preço on-chain** em swaps delegados — A confia que B passa
+um `minOut` justo e limita a exposição via allowance, prazo e a aprovação ERC20
+ao roteador. O valor efetivamente gastável é o MÍNIMO entre a aprovação ERC20 e a
+allowance de delegação.
+
+### Controles exclusivos do owner
+
+`encodeReferralPause()` / `encodeReferralUnpause()`,
+`encodeReferralSetMaxReferralBps(bps)` (`bps <= 10`) e
+`encodeReferralRescueTokens(token, to)` (varre só o saldo **não** devido aos
+referrers). A chave assinante precisa ser a do owner do roteador.
+
+Veja `examples/nodejs/12-referral-swap.ts` e `examples/go/referral-swap/` para
+fluxos completos e executáveis.
+
+---
+
 ## Indexação de eventos
 
 Cada evento emitido por Afi tem um parser tipado que recebe um array de
@@ -1801,6 +1881,7 @@ erro continuam idênticos.
 | `examples/nodejs/6-operator-batch.ts`  | `swapFor` + `batchSwapFor` para usuários pré-aprovados |
 | `examples/nodejs/9-admin-governance.ts`| Pause, fee bps, regras — fluxos exclusivos do owner |
 | `examples/nodejs/10-event-indexer.ts`  | `getLogs` + parsers de evento do Afi |
+| `examples/nodejs/12-referral-swap.ts`  | Taxa de referral, delegação, limites do owner (AfiReferralRouter) |
 | `examples/go/list-tokens/`             | Listar tokens ativos |
 | `examples/go/get-quote/`               | Functional options |
 | `examples/go/execute-swap/`            | Cotar → revisar → executar |
@@ -1809,6 +1890,7 @@ erro continuam idênticos.
 | `examples/go/operator-batch/`          | `SwapFor` + `BatchSwapFor` |
 | `examples/go/admin-governance/`        | Fluxos exclusivos do owner |
 | `examples/go/event-indexer/`           | Parsers de evento |
+| `examples/go/referral-swap/`           | Taxa de referral, delegação, limites do owner (AfiReferralRouter) |
 
 Executar exemplos TS:
 

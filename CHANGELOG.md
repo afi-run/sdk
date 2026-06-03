@@ -9,6 +9,17 @@ adheres to Semantic Versioning.
 
 ### Added
 
+#### AfiReferralRouter support (2026-06-03)
+- Deployed AfiReferralRouter addresses for all 5 chains
+  (`ReferralRouterAddresses` / `REFERRAL_ROUTER_ADDRESSES`) and the full
+  contract ABI (`AfiReferralRouterABI` / `AFI_REFERRAL_ROUTER_ABI`).
+- Calldata encoders (Go: `referral.go`, Node: `referral.ts`):
+  `swapWithReferral`, `swapWithReferralFor`, `claim`, `claimMany`,
+  `setDelegateAllowance`, `revokeDelegate`, plus owner-only `pause`/`unpause`,
+  `setMaxReferralBps`, `rescueTokens`.
+- Address resolver `ReferralRouterAddress` / `referralRouterAddress(chainId)`
+  and the `ReferralHardCapBps` / `REFERRAL_HARD_CAP_BPS` (10 = 0.10%) constant.
+
 #### Deployed contract addresses (2026-05-30)
 - Afi, RouteQuoter addresses populated for 5 chains: Ethereum, BSC,
   Unichain, Base, Arbitrum.

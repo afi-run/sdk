@@ -165,4 +165,28 @@ describe("parsers ignore unrelated logs", () => {
     expect(parseSwapExecuted([noise])).toEqual([])
     expect(parseFeeCollected([noise])).toEqual([])
   })
+
+  it("skips a log whose topic0 doesn't decode (catch path)", () => {
+    // Non-empty topics that don't correspond to any AFI event → decodeEventLog throws.
+    const garbage: Log = {
+      ...emptyLog(),
+      topics: [pad("0xdeadbeef", { size: 32 }) as `0x${string}`],
+      data: "0x",
+    }
+    expect(parseSwapExecuted([garbage])).toEqual([])
+  })
+
+  it("skips a valid log of a different event (eventName mismatch)", () => {
+    // A real FeeCollected log handed to the SwapExecuted parser.
+    const feeLog = makeLog(
+      AFI_ABI,
+      "FeeCollected",
+      { token: ADDR_A },
+      [{ type: "uint256" }],
+      [1000n],
+    )
+    expect(parseSwapExecuted([feeLog])).toEqual([])
+    // ...but the matching parser still decodes it.
+    expect(parseFeeCollected([feeLog])).toHaveLength(1)
+  })
 })

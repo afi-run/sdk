@@ -339,6 +339,36 @@ describe("findArbitrage", () => {
       findArbitrage(API, { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" }),
     ).rejects.toThrow("HTTP 500")
   })
+
+  const arb = { network: NETWORK.BASE, tokenIn: USDC, tokenOut: USDC, amountIn: "1" }
+
+  it("surfaces json.message on a non-success body", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ status: "error", message: "no liquidity" }), { status: 200 }),
+    )
+    await expect(findArbitrage(API, arb)).rejects.toThrow("no liquidity")
+  })
+
+  it("uses string data as the message when there is no message field", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ status: "error", data: "rate limited" }), { status: 200 }),
+    )
+    await expect(findArbitrage(API, arb)).rejects.toThrow("rate limited")
+  })
+
+  it("falls back to a generic message when neither message nor string data is present", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ status: "error" }), { status: 200 }),
+    )
+    await expect(findArbitrage(API, arb)).rejects.toThrow("unknown error from afi-rpc")
+  })
+
+  it("treats a success status with undefined data as an error", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ status: "success" }), { status: 200 }),
+    )
+    await expect(findArbitrage(API, arb)).rejects.toThrow("unknown error from afi-rpc")
+  })
 })
 
 describe("findPath", () => {

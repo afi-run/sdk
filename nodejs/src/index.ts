@@ -15,7 +15,23 @@ export {
   ROUTE_REGISTRY_ABI,
   OWNABLE2STEP_ABI,
   TREASURY_OWNER,
+  REFERRAL_ROUTER_ADDRESSES,
+  AFI_REFERRAL_ROUTER_ABI,
 } from "./constants.js"
+export {
+  REFERRAL_HARD_CAP_BPS,
+  referralRouterAddress,
+  encodeSwapWithReferral,
+  encodeSwapWithReferralFor,
+  encodeReferralClaim,
+  encodeReferralClaimMany,
+  encodeSetDelegateAllowance,
+  encodeRevokeDelegate,
+  encodeReferralPause,
+  encodeReferralUnpause,
+  encodeReferralSetMaxReferralBps,
+  encodeReferralRescueTokens,
+} from "./referral.js"
 export {
   AfiError,
   InsufficientBalanceError,

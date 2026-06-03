@@ -88,6 +88,19 @@ describe("decodeRevertReason — fallbacks", () => {
     const data = encodeRevert("Mystery(uint256)", ["uint256"], [1n])
     expect(decodeRevertReason(data)).toBeNull()
   })
+
+  it("accepts hex data without the 0x prefix", () => {
+    const data = encodeRevert("Error(string)", ["string"], ["boom"])
+    const r = decodeRevertReason(data.slice(2)) // strip "0x"
+    expect(r).not.toBeNull()
+    expect(r!.name).toBe("Error")
+    expect(r!.args[0]).toBe("boom")
+  })
+
+  it("returns null for non-string data", () => {
+    // @ts-expect-error exercising the runtime guard
+    expect(decodeRevertReason(12345)).toBeNull()
+  })
 })
 
 describe("registerCustomErrors + getRegisteredErrors", () => {
@@ -133,6 +146,18 @@ describe("describeDecodedRevert", () => {
   it("formats no-arg errors as just the name", () => {
     expect(describeDecodedRevert({ name: "ZeroAddress", signature: "ZeroAddress()", args: [] }))
       .toBe("ZeroAddress")
+  })
+
+  it("stringifies mixed bigint and non-bigint args", () => {
+    expect(describeDecodedRevert({
+      name: "Mixed",
+      signature: "Mixed(uint256,address)",
+      args: [100n, "0xabc"],
+    })).toBe("Mixed(100, 0xabc)")
+  })
+
+  it("handles undefined", () => {
+    expect(describeDecodedRevert(undefined)).toBe("unknown revert")
   })
 
   it("handles null", () => {
