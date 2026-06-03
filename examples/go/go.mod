@@ -1,6 +1,6 @@
 module example
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/afi-run/sdk/go v0.0.0
