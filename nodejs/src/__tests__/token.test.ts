@@ -105,6 +105,26 @@ describe("assertSufficientBalance", () => {
       expect(err.token).toBe(TOKEN)
     }
   })
+
+  it("enriches the error with symbol/decimals when token metadata is available", async () => {
+    pub.readContract!.mockResolvedValue(100_000000n) // balance < required
+    // fetchTokenInfo succeeds via multicall → info is defined.
+    ;(pub as any).multicall = vi.fn().mockResolvedValue([
+      { status: "success", result: "USDC" },
+      { status: "success", result: "USD Coin" },
+      { status: "success", result: 6 },
+    ])
+
+    try {
+      await assertSufficientBalance(TOKEN, OWNER, 500_000000n, pub as any)
+      throw new Error("should have thrown")
+    } catch (e) {
+      const err = e as InsufficientBalanceError
+      expect(err).toBeInstanceOf(InsufficientBalanceError)
+      expect(err.symbol).toBe("USDC")
+      expect(err.decimals).toBe(6)
+    }
+  })
 })
 
 describe("ensureExactApproval", () => {
@@ -162,6 +182,17 @@ describe("ensureExactApproval", () => {
 
     const result = await ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
     expect(result).toBe("0xtxhash")
+  })
+
+  it("reports both failures when reset AND approve throw", async () => {
+    pub.readContract!.mockResolvedValueOnce(200_000000n) // current > 0 → reset attempted
+    wallet.writeContract!
+      .mockRejectedValueOnce(new Error("reset boom"))
+      .mockRejectedValueOnce(new Error("approve boom"))
+
+    await expect(
+      ensureExactApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15),
+    ).rejects.toThrowError(/approve boom.*allowance reset also failed: reset boom/)
   })
 
   it("throws ApprovalError when on-chain allowance does not match after confirmation", async () => {
@@ -269,6 +300,46 @@ describe("submitApproval", () => {
     await expect(
       submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15),
     ).rejects.toBeInstanceOf(ApprovalError)
+  })
+
+  it("increments the explicit nonce across the reset + approve sequence", async () => {
+    pub.readContract!
+      .mockResolvedValueOnce(200_000000n)  // current > 0 → reset first
+      .mockResolvedValueOnce(500_000000n)  // post-wait re-check
+    wallet.writeContract!.mockResolvedValue("0xtxhash")
+    pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 1n, gasUsed: 1n })
+
+    await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15, 5)
+
+    // reset uses nonce 5, the real approve uses 6 (incremented after the reset).
+    expect(wallet.writeContract).toHaveBeenNthCalledWith(1, expect.objectContaining({ nonce: 5 }))
+    expect(wallet.writeContract).toHaveBeenNthCalledWith(2, expect.objectContaining({ nonce: 6 }))
+  })
+
+  it("reports both failures when reset AND approve throw", async () => {
+    pub.readContract!.mockResolvedValueOnce(200_000000n) // current > 0 → reset attempted
+    wallet.writeContract!
+      .mockRejectedValueOnce(new Error("reset boom"))   // reset fails → resetErr set
+      .mockRejectedValueOnce(new Error("approve boom")) // approve also fails
+
+    await expect(
+      submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15),
+    ).rejects.toThrowError(/approve boom.*allowance reset also failed: reset boom/)
+  })
+
+  it("wait() forwards confirmations and timeout options", async () => {
+    pub.readContract!
+      .mockResolvedValueOnce(0n)
+      .mockResolvedValueOnce(500_000000n)
+    wallet.writeContract!.mockResolvedValue("0xpending")
+    pub.waitForTransactionReceipt!.mockResolvedValue({ blockNumber: 9n, gasUsed: 2n })
+
+    const pending = await submitApproval(TOKEN, OWNER, 500_000000n, pub as any, wallet as any, 15)
+    await pending!.wait({ confirmations: 3, timeoutMs: 5000 })
+
+    expect(pub.waitForTransactionReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmations: 3, timeout: 5000 }),
+    )
   })
 
   it("passes gas estimate + buffer to writeContract", async () => {

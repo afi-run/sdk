@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AFI_ADDRESS, MULTICALL3_ADDRESS } from "../constants.js"
-import { fetchTokenInfo, fetchTokenInfoBatch } from "../multicall.js"
+import { fetchTokenInfo, fetchTokenInfoBatch, genericMulticall } from "../multicall.js"
 import type { PublicClient, Transport } from "viem"
 import type { base } from "viem/chains"
 
@@ -177,5 +177,35 @@ describe("fetchTokenInfoBatch", () => {
 
     const calls = pub.multicall.mock.calls[0][0].contracts
     expect(calls).toHaveLength(10) // 2 tokens × 5 calls
+  })
+})
+
+describe("genericMulticall", () => {
+  const C = { address: AFI_ADDRESS, abi: [], functionName: "x" } as any
+
+  it("normalizes success and failure results, defaulting allowFailure=true", async () => {
+    pub.multicall.mockResolvedValue([
+      { status: "success", result: 1n },
+      { status: "failure", error: new Error("reverted X") },
+    ])
+
+    const out = await genericMulticall(pub as any, [C, C])
+
+    expect(out[0]).toEqual({ status: "success", result: 1n })
+    expect(out[1].status).toBe("failure")
+    expect((out[1] as { error: Error }).error.message).toBe("reverted X")
+    // allowFailure defaulted to true
+    expect(pub.multicall.mock.calls[0][0].allowFailure).toBe(true)
+    expect(pub.multicall.mock.calls[0][0].multicallAddress).toBe(MULTICALL3_ADDRESS)
+  })
+
+  it("substitutes a default Error when a failure carries none", async () => {
+    pub.multicall.mockResolvedValue([{ status: "failure" }]) // no `error` field
+
+    const out = await genericMulticall(pub as any, [C], { allowFailure: false })
+
+    expect(out[0].status).toBe("failure")
+    expect((out[0] as { error: Error }).error.message).toBe("call reverted")
+    expect(pub.multicall.mock.calls[0][0].allowFailure).toBe(false)
   })
 })

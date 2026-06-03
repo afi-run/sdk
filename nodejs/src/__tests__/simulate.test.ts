@@ -61,6 +61,11 @@ describe("mappingSlot", () => {
     expect(mappingSlot(holder, slot)).toBe(expected)
   })
 
+  it("accepts a bigint slot", () => {
+    const holder = getAddress("0x1234567890abcdef1234567890abcdef12345678")
+    expect(mappingSlot(holder, 9n)).toBe(mappingSlot(holder, 9))
+  })
+
   it("is deterministic", () => {
     const h = getAddress("0x1234567890123456789012345678901234567890")
     expect(mappingSlot(h, 5)).toBe(mappingSlot(h, 5))
@@ -124,5 +129,72 @@ describe("detectBalanceSlot", () => {
     await expect(
       detectBalanceSlot(client, 1, "0x000000000000000000000000000000000000dEaD", 3),
     ).rejects.toThrow(/not detected/)
+  })
+
+  it("skips a slot whose eth_call throws and matches a later one", async () => {
+    const sentinel = pad(`0x${(0xdeadbeefdeadbeefn).toString(16)}` as Hex, { size: 32 })
+    let n = 0
+    const client = {
+      call: async () => {
+        n++
+        if (n === 1) throw new Error("rpc hiccup on slot 0")
+        return { data: sentinel } // slot 1 echoes the sentinel
+      },
+    } as never
+    const token = "0x000000000000000000000000000000000000Ab1e" as Address
+    expect(await detectBalanceSlot(client, 1, token)).toBe(1)
+  })
+})
+
+describe("simulateRoute revert handling", () => {
+  const asset = getAddress("0x00000000000000000000000000000000000bEEf1")
+
+  function throwingQuoteClient(err: unknown) {
+    registerBalanceSlot(8453, asset, 0) // pre-register so detection is skipped
+    return { call: async () => { throw err } } as never
+  }
+
+  async function run(err: unknown) {
+    return simulateRoute({
+      publicClient: throwingQuoteClient(err),
+      chainId: 8453,
+      quoterAddress: "0x0000000000000000000000000000000000000001",
+      asset,
+      amount: 1n,
+      stepsEncoded: "0x00",
+    })
+  }
+
+  it("extracts revert data from err.cause.data", async () => {
+    const res = await run({ cause: { data: "0xdeadbeef" } })
+    expect(res.reverted).toBe(true)
+    expect(res.revertData).toBe("0xdeadbeef")
+  })
+
+  it("falls back to err.data", async () => {
+    const res = await run({ data: "0xfeed" })
+    expect(res.reverted).toBe(true)
+    expect(res.revertData).toBe("0xfeed")
+  })
+
+  it("leaves revertData undefined when the error carries none", async () => {
+    const res = await run(new Error("plain revert"))
+    expect(res.reverted).toBe(true)
+    expect(res.revertData).toBeUndefined()
+  })
+
+  it("treats an empty quote result as reverted", async () => {
+    const empty = getAddress("0x00000000000000000000000000000000000bEEf2")
+    registerBalanceSlot(8453, empty, 0) // skip detection
+    const client = { call: async () => ({ data: undefined }) } as never
+    const res = await simulateRoute({
+      publicClient: client,
+      chainId: 8453,
+      quoterAddress: "0x0000000000000000000000000000000000000001",
+      asset: empty,
+      amount: 1n,
+      stepsEncoded: "0x00",
+    })
+    expect(res.reverted).toBe(true)
   })
 })
